@@ -51,6 +51,13 @@ struct cpudef {
 
 static uint16_t machine_id = 0;
 
+/*
+ * Non-zero if QEMU sent a machine id we do not know (newer QEMU than
+ * this ROM); we fall back to a safe default and warn once the console
+ * is up.
+ */
+static uint16_t unknown_machine_id = 0;
+
 extern void unexpected_excep(int vector);
 
 void
@@ -214,6 +221,16 @@ entry(void)
         temp = fw_cfg_read_i32(FW_CFG_ID);
         if (temp == 1) {
             machine_id = fw_cfg_read_i16(FW_CFG_MACHINE_ID);
+            if (machine_id >= sizeof(known_arch) / sizeof(known_arch[0])) {
+                /*
+                 * Unknown machine id (QEMU newer than this ROM): fall
+                 * back to a known machine instead of reading past the
+                 * end of known_arch[]. The warning is printed later,
+                 * after the console is initialized.
+                 */
+                unknown_machine_id = machine_id;
+                machine_id = ARCH_MAC99_U3;
+            }
             arch = &known_arch[machine_id];
         }
     }
@@ -232,6 +249,11 @@ entry(void)
         printk("Incompatible configuration device version, freezing\n");
         for (;;) {
         }
+    }
+
+    if (unknown_machine_id) {
+        printk("Unknown machine id %d, falling back to %s\n",
+               unknown_machine_id, arch->name);
     }
 
     ofmem_init();
