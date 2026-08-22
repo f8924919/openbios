@@ -34,6 +34,8 @@ typedef struct {
 	xt_t 		parent_seek_xt;
 	xt_t 		parent_tell_xt;
 	xt_t		parent_read_xt;
+	xt_t		parent_block_size_xt;
+	xt_t		parent_max_transfer_xt;
 
         ucell	        offs_hi, offs_lo;
         ucell	        size_hi, size_lo;
@@ -74,6 +76,8 @@ dlabel_open( dlabel_info_t *di )
 	di->parent_seek_xt = find_parent_method("seek");
 	di->parent_tell_xt = find_parent_method("tell");
 	di->parent_read_xt = find_parent_method("read");
+	di->parent_block_size_xt = find_parent_method("block-size");
+	di->parent_max_transfer_xt = find_parent_method("max-transfer");
 
 	/* If arguments have been passed, determine the partition/filesystem type */
 	if (path && strlen(path)) {
@@ -174,6 +178,30 @@ dlabel_tell( dlabel_info_t *di )
 	call_package(di->parent_tell_xt, my_parent());
 }
 
+/* ( -- block-size ) */
+static void
+dlabel_block_size( dlabel_info_t *di )
+{
+	if (di->parent_block_size_xt) {
+		/* Call back up to parent */
+		call_package(di->parent_block_size_xt, my_parent());
+	} else {
+		PUSH(512);
+	}
+}
+
+/* ( -- max-transfer ) */
+static void
+dlabel_max_transfer( dlabel_info_t *di )
+{
+	if (di->parent_max_transfer_xt) {
+		/* Call back up to parent */
+		call_package(di->parent_max_transfer_xt, my_parent());
+	} else {
+		PUSH(512);
+	}
+}
+
 /* ( addr len -- actual ) */
 static void
 dlabel_write( __attribute__((unused)) dlabel_info_t *di )
@@ -236,6 +264,8 @@ NODE_METHODS( dlabel ) = {
 	{ "seek",	dlabel_seek 	},
 	{ "tell",	dlabel_tell 	},
 	{ "dir",	dlabel_dir 	},
+	{ "block-size",	dlabel_block_size },
+	{ "max-transfer", dlabel_max_transfer },
 };
 
 void
