@@ -332,7 +332,7 @@ ob_u3_ht_init(void)
          */
         set_int_property(dnode, "#address-cells", 3);
         set_int_property(dnode, "#size-cells", 2);
-        props[0] = __cpu_to_be32(0xf6000000);
+        props[0] = __cpu_to_be32(0xf2000000);
         props[1] = __cpu_to_be32(0x02000000);
         props[2] = __cpu_to_be32(0xf8070000);
         props[3] = __cpu_to_be32(0x00001000);
