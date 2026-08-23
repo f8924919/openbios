@@ -1669,6 +1669,13 @@ static void ob_configure_pci_bridge(pci_addr addr,
     pci_config_write16(addr, PCI_IO_BASE_UPPER, (*io_base >> 16));
     pci_config_write8(addr, PCI_IO_BASE, ((*io_base >> 8) & ~(0xf)));
 
+    /* Like the ioports below, keep the memory window fully open while
+       scanning the secondary bus: device configuration callbacks (the
+       mac-io for one) program their device's MMIO registers during the
+       scan, before the final limit is known.  The real limit is set
+       once the scan is done. */
+    pci_config_write16(addr, PCI_MEMORY_LIMIT, 0xfff0);
+
     /* Always ensure legacy ioports are accessible during enumeration.
        Some drivers (e.g. IDE) will attempt ioport access as part of
        the configuration process, so we allow them during the secondary
