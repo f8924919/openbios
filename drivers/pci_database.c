@@ -409,6 +409,13 @@ static const pci_dev_t hbrg_devices[] = {
 
 static const pci_dev_t PCIbrg_devices[] = {
     {
+        /* K2 HT-PCI bridge (PowerMac7,3): MacIO hangs off its bus 1 */
+        PCI_VENDOR_ID_APPLE, PCI_DEVICE_ID_APPLE_K2_HT_PCI, NULL,
+        "pci", "K2, HT-PCI", "pci106b,45\0pciclass,060400\0",
+        3, 2, 1,
+        bridge_config_cb, NULL,
+    },
+    {
         PCI_VENDOR_ID_DEC, PCI_DEVICE_ID_DEC_21154, NULL,
         "pci-bridge", "DEV,21154", "DEV,21154\0pci-bridge\0",
         3, 2, 1,
