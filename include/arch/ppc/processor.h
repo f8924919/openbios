@@ -159,6 +159,9 @@
 #define S_HID4		1012	/* HID4 - Instruction Address Compare 1 (?) */
 #define S_HID5		1013
 #define S_DABR		S_HID5	/* HID5 - Data Address Breakpoint */
+#define S_970_HID5	1014	/* PPC970: HID5 (SPR 1014 / 0x3f6). Classic PPC
+				 * labels this SPR MSSCR0; on the 970 it is HID5,
+				 * which carries the dcbz-size control bit. */
 #define S_MSSCR0	1014	/* HID6 - Memory Subsystem Control Register 0 */
 #define S_MSSCR1	1015	/* HID7 - Memory Subsystem Control Register 1 */
 #define S_LDSTCR	1016	/* HID8 - Load/Store Control Register */
@@ -410,6 +413,8 @@
 #define __stringify_1(x)	#x
 #define __stringify(x)		__stringify_1(x)
 #define mtspr(rn, v)		asm volatile("mtspr " __stringify(rn) ",%0" : : "r" (v))
+#define mfspr(rn)		({ unsigned long __v; \
+	asm volatile("mfspr %0, " __stringify(rn) : "=r" (__v)); __v; })
 
 static inline unsigned long mfmsr(void)
 {
