@@ -36,6 +36,18 @@ struct pci_arch_t {
 	unsigned long io_len;
 	pci_range_t host_ranges[4];
 	uint8_t irqs[4];
+	/*
+	 * Optional config space accessors for host bridges that do not use
+	 * the cfg_addr/cfg_data indirect mechanism (e.g. the U3 HT bridge's
+	 * flat memory-mapped window).  When NULL, the per-arch default in
+	 * include/arch/<arch>/pci.h is used.
+	 */
+	uint8_t (*config_read8)(pci_addr dev, uint8_t reg);
+	uint16_t (*config_read16)(pci_addr dev, uint8_t reg);
+	uint32_t (*config_read32)(pci_addr dev, uint8_t reg);
+	void (*config_write8)(pci_addr dev, uint8_t reg, uint8_t val);
+	void (*config_write16)(pci_addr dev, uint8_t reg, uint16_t val);
+	void (*config_write32)(pci_addr dev, uint8_t reg, uint32_t val);
 };
 
 extern const pci_arch_t *arch;
