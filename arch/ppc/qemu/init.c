@@ -369,14 +369,31 @@ entry(void)
     }
 }
 
+/*
+ * Number of address cells on the device tree root.  Static builds keep
+ * the compile-time value; PowerMac7,3 switches to 2 at runtime before
+ * any root-relative reg/ranges property is generated.
+ */
+#ifdef CONFIG_PPC64
+static int root_address_cells = 2;
+#else
+static int root_address_cells = 1;
+#endif
+
+int
+qemu_root_address_cells(void)
+{
+    return root_address_cells;
+}
+
 /* -- phys.lo ... phys.hi */
 static void
 push_physaddr(phys_addr_t value)
 {
     PUSH(value);
-#ifdef CONFIG_PPC64
-    PUSH(value >> 32);
-#endif
+    if (qemu_root_address_cells() == 2) {
+        PUSH((uint64_t)value >> 32);
+    }
 }
 
 /* From drivers/timer.c */

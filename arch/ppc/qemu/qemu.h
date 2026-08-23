@@ -15,6 +15,9 @@
 #ifndef _H_QEMU
 #define _H_QEMU
 
+/* init.c */
+extern int		qemu_root_address_cells( void );
+
 /* vfd.c */
 extern int		vfd_draw_str( const char *str );
 extern void		vfd_close( void );
