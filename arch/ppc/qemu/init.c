@@ -1079,6 +1079,34 @@ arch_of_init(void)
         ob_unin_init();
         break;
     case ARCH_POWERMAC7_3:
+        /*
+         * Real firmware exposes a 2/1-cell root.  Switch before any
+         * root-relative reg/ranges property is generated (nvram, the
+         * PCI host bridges, /memory and the ofmem-maintained
+         * available/translations properties all follow at runtime).
+         */
+        root_address_cells = 2;
+        set_int_property(find_dev("/"), "#address-cells", 2);
+        feval("2 root-#adr-cells !");
+        /* /rom was built by tree.fs with one-cell values: widen them. */
+        {
+            phandle_t rom = find_dev("/rom");
+            if (rom) {
+                uint32_t props[4];
+
+                props[0] = 0;
+                props[1] = 0xff800000;
+                props[2] = 0;
+                set_property(rom, "reg", (char *)props,
+                             3 * sizeof(props[0]));
+                props[0] = 0xff800000;
+                props[1] = 0;
+                props[2] = 0x00800000;
+                props[3] = 0xff800000;
+                set_property(rom, "ranges", (char *)props,
+                             4 * sizeof(props[0]));
+            }
+        }
         macio_nvram_init("/", 0);
         ob_pci_init();
         /*

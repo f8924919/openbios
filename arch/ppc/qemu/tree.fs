@@ -41,16 +41,17 @@ h# 05f5e100 encode-int " clock-frequency" property
 
 \ Root unit addresses follow #address-cells: one cell keeps the legacy
 \ bare hex form, two cells use the Apple "hi,lo" form (e.g. ht@0,f2000000).
-: decode-unit ( str len -- unit.lo [unit.hi] )
+: decode-unit ( str len -- unit.hi unit.lo | unit )
   root-#adr-cells @ 2 = if
-    2 parse-nhex swap
+    2 parse-nhex
   else
     parse-hex
   then
 ;
 
-: encode-unit ( unit.lo [unit.hi] -- str len )
+: encode-unit ( unit.hi unit.lo | unit -- str len )
   root-#adr-cells @ 2 = if
+    swap
     pocket tohexstr
     " ," pocket tmpstrcat >r
     rot pocket tohexstr r> tmpstrcat drop

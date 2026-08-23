@@ -613,20 +613,25 @@ static int sabre_configure(phandle_t dev)
 
 static int u3_ht_configure(phandle_t dev)
 {
-        uint32_t props[4];
+        uint32_t props[6];
+        int ncells = 0;
 
         /*
          * The U3 HT bridge exposes two reg entries: the flat external
          * config window and its own (self) register window at
          * 0xf8000000 + U3_HT_CONFIG_BASE.  The generic host bridge
-         * code only knows about the config window, so override.
-         * Raw cells assume the root node's #address-cells = 1.
+         * code only knows about the config window, so override,
+         * following the root node's #address-cells/#size-cells.
          */
-        props[0] = arch->cfg_base;
-        props[1] = arch->cfg_len;
-        props[2] = 0xf8070000;
-        props[3] = 0x00001000;
-        set_property(dev, "reg", (char *)props, 4 * sizeof(props[0]));
+        ncells += encode_int32_cells(host_address_cells(), props + ncells,
+                                     arch->cfg_base);
+        ncells += encode_int32_cells(host_size_cells(), props + ncells,
+                                     arch->cfg_len);
+        ncells += encode_int32_cells(host_address_cells(), props + ncells,
+                                     0xf8070000);
+        ncells += encode_int32_cells(host_size_cells(), props + ncells,
+                                     0x00001000);
+        set_property(dev, "reg", (char *)props, ncells * sizeof(props[0]));
         return 0;
 }
 

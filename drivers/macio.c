@@ -79,11 +79,22 @@ static unsigned long macio_nvram_size(void)
 		return NW_IO_NVRAM_SIZE;
 }
 
+/* #address-cells of the node the child hangs off (1 unless overridden) */
+static int parent_address_cells(const char *path)
+{
+	phandle_t parent = find_dev(path);
+
+	if (parent && get_int_property(parent, "#address-cells", NULL) == 2)
+		return 2;
+	return 1;
+}
+
 void macio_nvram_init(const char *path, phys_addr_t addr)
 {
 	phandle_t chosen, aliases;
 	phandle_t dnode;
-	int props[2];
+	int props[3];
+	int n = 0;
 	char buf[64];
         unsigned long nvram_size, nvram_offset;
 
@@ -95,9 +106,11 @@ void macio_nvram_init(const char *path, phys_addr_t addr)
 	snprintf(buf, sizeof(buf), "%s", path);
 	dnode = nvram_init(buf);
 	set_int_property(dnode, "#bytes", arch_nvram_size() );
-	props[0] = __cpu_to_be32(nvram_offset);
-	props[1] = __cpu_to_be32(nvram_size);
-	set_property(dnode, "reg", (char *)&props, sizeof(props));
+	if (parent_address_cells(path) == 2)
+		props[n++] = 0;
+	props[n++] = __cpu_to_be32(nvram_offset);
+	props[n++] = __cpu_to_be32(nvram_size);
+	set_property(dnode, "reg", (char *)&props, n * sizeof(props[0]));
 	set_property(dnode, "device_type", "nvram", 6);
 	NEWWORLD(set_property(dnode, "compatible", "nvram,flash", 12));
 
@@ -286,7 +299,8 @@ void
 ob_u3_init(void)
 {
         phandle_t dnode;
-        int props[2];
+        int props[3];
+        int n = 0;
 
         fword("new-device");
         push_str("u3");
@@ -296,9 +310,11 @@ ob_u3_init(void)
         set_property(dnode, "device_type", "memory-controller", 18);
         set_property(dnode, "compatible", "u3", 3);
         set_int_property(dnode, "device-rev", 7);
-        props[0] = __cpu_to_be32(0xf8000000);
-        props[1] = __cpu_to_be32(0x1000000);
-        set_property(dnode, "reg", (char *)&props, sizeof(props));
+        if (parent_address_cells("/") == 2)
+                props[n++] = 0;
+        props[n++] = __cpu_to_be32(0xf8000000);
+        props[n++] = __cpu_to_be32(0x1000000);
+        set_property(dnode, "reg", (char *)&props, n * sizeof(props[0]));
 
         fword("finish-device");
 }
