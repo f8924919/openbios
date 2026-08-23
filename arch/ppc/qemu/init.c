@@ -238,7 +238,7 @@ static const pci_arch_t known_arch[] = {
  * U3_HT_CFA1 = CFA0 + (bus << 16) + 0x01000000 for the others (see
  * Linux arch/powerpc/platforms/powermac/pci.c).
  */
-static uint32_t u3_ht_cfg_addr(pci_addr dev, uint8_t reg)
+static uintptr_t u3_ht_cfg_addr(pci_addr dev, uint8_t reg)
 {
     uint32_t bus = PCI_BUS(dev);
     uint32_t devfn = (PCI_DEV(dev) << 3) | PCI_FN(dev);
@@ -247,7 +247,7 @@ static uint32_t u3_ht_cfg_addr(pci_addr dev, uint8_t reg)
     if (bus) {
         off += (bus << 16) + 0x01000000;
     }
-    return arch->cfg_base + off;
+    return (uintptr_t)arch->cfg_base + off;
 }
 
 static uint8_t u3_ht_config_read8(pci_addr dev, uint8_t reg)
