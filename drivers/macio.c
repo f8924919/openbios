@@ -175,17 +175,17 @@ macio_nvram_get(char *buf)
 }
 
 static void
-openpic_init(const char *path, phys_addr_t addr)
+openpic_init(const char *path, const char *name)
 {
         phandle_t dnode;
         int props[2];
         char buf[128];
 
         fword("new-device");
-        push_str("interrupt-controller");
+        push_str(name);
         fword("device-name");
 
-        snprintf(buf, sizeof(buf), "%s/interrupt-controller", path);
+        snprintf(buf, sizeof(buf), "%s/%s", path, name);
         dnode = find_dev(buf);
         set_property(dnode, "device_type", "open-pic", 9);
         set_property(dnode, "compatible", "chrp,open-pic", 14);
@@ -316,6 +316,28 @@ ob_u3_init(void)
         props[n++] = __cpu_to_be32(0x1000000);
         set_property(dnode, "reg", (char *)&props, n * sizeof(props[0]));
 
+        /*
+         * The mpic lives inside U3 on the real machine.  Linux needs
+         * the cells and a ranges entry here: without ranges, the Apple
+         * of_empty_ranges_quirk() silently treats child addresses as
+         * 1:1, sending the mpic reg 0x40000 into RAM.
+         */
+        set_int_property(dnode, "#address-cells", 1);
+        set_int_property(dnode, "#size-cells", 1);
+        {
+                uint32_t ranges[4];
+                int rn = 0;
+
+                ranges[rn++] = 0;               /* u3-internal offset 0 */
+                if (parent_address_cells("/") == 2)
+                        ranges[rn++] = 0;
+                ranges[rn++] = __cpu_to_be32(0xf8000000);
+                ranges[rn++] = __cpu_to_be32(0x1000000);
+                set_property(dnode, "ranges", (char *)ranges,
+                             rn * sizeof(ranges[0]));
+        }
+        openpic_init("/u3", "mpic");
+
         fword("finish-device");
 }
 
@@ -428,7 +450,14 @@ ob_macio_keylargo_init(const char *path, phys_addr_t addr)
 
     escc_init(path, addr);
     macio_ide_init(path, addr, 2);
-    openpic_init(path, addr);
+    /*
+     * PowerMac7,3 exposes the mpic under /u3 (created before PCI
+     * enumeration); only build the BAR-internal interrupt-controller
+     * when no open-pic node exists yet (mac99 family).
+     */
+    if (!dt_iterate_type(0, "open-pic")) {
+        openpic_init(path, "interrupt-controller");
+    }
 
     aliases = find_dev("/aliases");
     set_property(aliases, "mac-io", path, strlen(path) + 1);

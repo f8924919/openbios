@@ -1107,11 +1107,19 @@ arch_of_init(void)
                              4 * sizeof(props[0]));
             }
         }
+        /*
+         * /u3 (with the mpic under it) must exist before the first
+         * ob_pci_init(): interrupt-map generation looks the openpic up
+         * with dt_iterate_type(0, "open-pic"), and the mac-io configure
+         * callback skips its BAR-internal interrupt-controller when an
+         * open-pic node is already present.
+         */
+        ob_u3_init();
         macio_nvram_init("/", 0);
         ob_pci_init();
         /*
-         * Second enumeration pass for the (still empty) HT domain,
-         * with the flat-window config accessors swapped in.
+         * Second enumeration pass for the HT domain, with the
+         * flat-window config accessors swapped in.
          */
         arch = &u3_ht_arch;
         ob_pci_init();
@@ -1128,7 +1136,6 @@ arch_of_init(void)
                 set_property(ht, "bus-range", (char *)props, sizeof(props));
             }
         }
-        ob_u3_init();
         break;
     default:
         ob_pci_init();
