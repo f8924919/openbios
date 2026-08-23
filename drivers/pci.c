@@ -1948,41 +1948,51 @@ static phandle_t ob_pci_host_set_interrupt_map(phandle_t host)
     path = get_path_from_ph(host);
     if (dnode && path) {
         /*
-         * Patch in openpic interrupt-parent properties.  Every lookup
-         * is guarded: a host bridge without a mac-io behind it (the U3
-         * HT domain while its bus is still empty) resolves none of
-         * these paths, and set_int_property() must not be handed a
-         * NULL phandle.
+         * Patch in openpic interrupt-parent properties.  The mac-io
+         * subnodes are resolved through the "mac-io" alias (set by the
+         * mac-io configure callback) rather than a path relative to
+         * the host bridge, so the lookup keeps working no matter how
+         * deep the enumeration placed the mac-io: directly on the host
+         * bus on mac99, behind the K2 HT-PCI bridge on PowerMac7,3.
+         * Every lookup is guarded: a host bridge without a mac-io
+         * behind it resolves none of these paths (no alias yet), and
+         * set_int_property() must not be handed a NULL phandle.
          */
         static const char *const subnodes[] = {
-            "%s/mac-io",
-            "%s/mac-io/escc/ch-a",
-            "%s/mac-io/escc/ch-b",
-            "%s/mac-io/escc-legacy/ch-a",
-            "%s/mac-io/escc-legacy/ch-b",
+            "%s",
+            "%s/escc/ch-a",
+            "%s/escc/ch-b",
+            "%s/escc-legacy/ch-a",
+            "%s/escc-legacy/ch-b",
             /* QEMU only emulates 2 of the 3 ata buses currently */
             /* On a new world Mac these are not numbered but named by the
              * ATA version they support. Thus we have: ata-3, ata-3, ata-4
              * On g3beige they all called just ide.
              * We take 2 x ata-3 buses which seems to work for
              * at least the clients we care about */
-            "%s/mac-io/ata-3@20000",
-            "%s/mac-io/ata-3@21000",
-            "%s/mac-io/via-cuda",
-            "%s/mac-io/via-pmu",
-            "%s/mac-io/gpio/extint-gpio1",
-            "%s/mac-io/gpio/programmer-switch",
-            "%s",
+            "%s/ata-3@20000",
+            "%s/ata-3@21000",
+            "%s/via-cuda",
+            "%s/via-pmu",
+            "%s/gpio/extint-gpio1",
+            "%s/gpio/programmer-switch",
         };
         unsigned int i;
+        phandle_t aliases = find_dev("/aliases");
+        char *macio_path;
 
-        for (i = 0; i < sizeof(subnodes) / sizeof(subnodes[0]); i++) {
-            snprintf(buf, sizeof(buf), subnodes[i], path);
-            target_node = find_dev(buf);
-            if (target_node) {
-                set_int_property(target_node, "interrupt-parent", dnode);
+        macio_path = aliases ?
+            get_property(aliases, "mac-io", NULL) : NULL;
+        if (macio_path) {
+            for (i = 0; i < sizeof(subnodes) / sizeof(subnodes[0]); i++) {
+                snprintf(buf, sizeof(buf), subnodes[i], macio_path);
+                target_node = find_dev(buf);
+                if (target_node) {
+                    set_int_property(target_node, "interrupt-parent", dnode);
+                }
             }
         }
+        set_int_property(host, "interrupt-parent", dnode);
 
         return dnode;
     }
