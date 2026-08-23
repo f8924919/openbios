@@ -1918,65 +1918,42 @@ static phandle_t ob_pci_host_set_interrupt_map(phandle_t host)
     dnode = dt_iterate_type(0, "open-pic");
     path = get_path_from_ph(host);
     if (dnode && path) {
-        /* patch in openpic interrupt-parent properties */
-        snprintf(buf, sizeof(buf), "%s/mac-io", path);
-        target_node = find_dev(buf);
-        set_int_property(target_node, "interrupt-parent", dnode);
+        /*
+         * Patch in openpic interrupt-parent properties.  Every lookup
+         * is guarded: a host bridge without a mac-io behind it (the U3
+         * HT domain while its bus is still empty) resolves none of
+         * these paths, and set_int_property() must not be handed a
+         * NULL phandle.
+         */
+        static const char *const subnodes[] = {
+            "%s/mac-io",
+            "%s/mac-io/escc/ch-a",
+            "%s/mac-io/escc/ch-b",
+            "%s/mac-io/escc-legacy/ch-a",
+            "%s/mac-io/escc-legacy/ch-b",
+            /* QEMU only emulates 2 of the 3 ata buses currently */
+            /* On a new world Mac these are not numbered but named by the
+             * ATA version they support. Thus we have: ata-3, ata-3, ata-4
+             * On g3beige they all called just ide.
+             * We take 2 x ata-3 buses which seems to work for
+             * at least the clients we care about */
+            "%s/mac-io/ata-3@20000",
+            "%s/mac-io/ata-3@21000",
+            "%s/mac-io/via-cuda",
+            "%s/mac-io/via-pmu",
+            "%s/mac-io/gpio/extint-gpio1",
+            "%s/mac-io/gpio/programmer-switch",
+            "%s",
+        };
+        unsigned int i;
 
-        snprintf(buf, sizeof(buf), "%s/mac-io/escc/ch-a", path);
-        target_node = find_dev(buf);
-        set_int_property(target_node, "interrupt-parent", dnode);
-
-        snprintf(buf, sizeof(buf), "%s/mac-io/escc/ch-b", path);
-        target_node = find_dev(buf);
-        set_int_property(target_node, "interrupt-parent", dnode);
-
-        snprintf(buf, sizeof(buf), "%s/mac-io/escc-legacy/ch-a", path);
-        target_node = find_dev(buf);
-        set_int_property(target_node, "interrupt-parent", dnode);
-
-        snprintf(buf, sizeof(buf), "%s/mac-io/escc-legacy/ch-b", path);
-        target_node = find_dev(buf);
-        set_int_property(target_node, "interrupt-parent", dnode);
-
-        /* QEMU only emulates 2 of the 3 ata buses currently */
-        /* On a new world Mac these are not numbered but named by the
-         * ATA version they support. Thus we have: ata-3, ata-3, ata-4
-         * On g3beige they all called just ide.
-         * We take 2 x ata-3 buses which seems to work for
-         * at least the clients we care about */
-        snprintf(buf, sizeof(buf), "%s/mac-io/ata-3@20000", path);
-        target_node = find_dev(buf);
-        set_int_property(target_node, "interrupt-parent", dnode);
-
-        snprintf(buf, sizeof(buf), "%s/mac-io/ata-3@21000", path);
-        target_node = find_dev(buf);
-        set_int_property(target_node, "interrupt-parent", dnode);
-
-        snprintf(buf, sizeof(buf), "%s/mac-io/via-cuda", path);
-        target_node = find_dev(buf);
-        set_int_property(target_node, "interrupt-parent", dnode);
-
-        snprintf(buf, sizeof(buf), "%s/mac-io/via-pmu", path);
-        target_node = find_dev(buf);
-        if (target_node) {
-            set_int_property(target_node, "interrupt-parent", dnode);
+        for (i = 0; i < sizeof(subnodes) / sizeof(subnodes[0]); i++) {
+            snprintf(buf, sizeof(buf), subnodes[i], path);
+            target_node = find_dev(buf);
+            if (target_node) {
+                set_int_property(target_node, "interrupt-parent", dnode);
+            }
         }
-
-        snprintf(buf, sizeof(buf), "%s/mac-io/gpio/extint-gpio1", path);
-        target_node = find_dev(buf);
-        if (target_node) {
-            set_int_property(target_node, "interrupt-parent", dnode);
-        }
-
-        snprintf(buf, sizeof(buf), "%s/mac-io/gpio/programmer-switch", path);
-        target_node = find_dev(buf);
-        if (target_node) {
-            set_int_property(target_node, "interrupt-parent", dnode);
-        }
-
-        target_node = find_dev(path);
-        set_int_property(target_node, "interrupt-parent", dnode);
 
         return dnode;
     }
