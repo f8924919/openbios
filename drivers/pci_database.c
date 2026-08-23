@@ -357,6 +357,13 @@ static const pci_dev_t hbrg_devices[] = {
         host_config_cb, NULL,
     },
     {
+        /* No host_config_cb: the real /ht node has no "ranges" */
+        PCI_VENDOR_ID_APPLE, PCI_DEVICE_ID_APPLE_U3_HT, "ht",
+        "ht", NULL, "u3-ht\0",
+        3, 2, 1,
+        u3_ht_config_cb, NULL,
+    },
+    {
         PCI_VENDOR_ID_APPLE, PCI_DEVICE_ID_APPLE_UNI_N_AGP, NULL,
         "pci", "AAPL,UniNorth", "uni-north\0",
         3, 2, 1,

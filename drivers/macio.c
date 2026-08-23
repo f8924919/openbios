@@ -303,47 +303,6 @@ ob_u3_init(void)
         fword("finish-device");
 }
 
-/*
- * U3 HyperTransport host bridge node (PowerMac7,3). Only the node
- * itself: the HT bus is still empty on the QEMU side, so no PCI
- * enumeration happens here. Kernels find it by its name ("ht", a
- * sibling of /pci at the root) and use reg[0] as the external config
- * window and reg[1] as the bridge's self registers; there must be no
- * "ranges" property (memory regions come from the region decode
- * register instead). The reg layout assumes the root node's
- * #address-cells = 1 (the qemu,ppc target; ppc64 would use 2).
- */
-void
-ob_u3_ht_init(void)
-{
-        phandle_t dnode;
-        int props[4];
-
-        fword("new-device");
-        push_str("ht");
-        fword("device-name");
-
-        dnode = find_dev("/ht");
-        set_property(dnode, "device_type", "ht", 3);
-        set_property(dnode, "compatible", "u3-ht", 6);
-        /*
-         * Standard PCI bus encoding for the children; the kernel warns
-         * if a PCI host bridge node lacks these, even on an empty bus.
-         */
-        set_int_property(dnode, "#address-cells", 3);
-        set_int_property(dnode, "#size-cells", 2);
-        props[0] = __cpu_to_be32(0xf2000000);
-        props[1] = __cpu_to_be32(0x02000000);
-        props[2] = __cpu_to_be32(0xf8070000);
-        props[3] = __cpu_to_be32(0x00001000);
-        set_property(dnode, "reg", (char *)&props, sizeof(props));
-        props[0] = __cpu_to_be32(0);
-        props[1] = __cpu_to_be32(0xef);
-        set_property(dnode, "bus-range", (char *)&props, 2 * sizeof(int));
-
-        fword("finish-device");
-}
-
 static void macio_gpio_init(const char *path)
 {
     fword("new-device");

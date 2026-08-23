@@ -35,6 +35,8 @@
 #define NO_QEMU_PROTOS
 #include "arch/common/fw_cfg.h"
 #include "arch/ppc/processor.h"
+#include "arch/ppc/pci.h"
+#include "asm/io.h"
 #include "context.h"
 
 #define UUID_FMT "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x"
@@ -228,6 +230,81 @@ static const pci_arch_t known_arch[] = {
         .irqs = { 21, 22, 23, 24 }
     },
 };
+
+/*
+ * Config space accessors for the U3 HyperTransport domain.  Unlike the
+ * cfg_addr/cfg_data indirect mechanism the HT bridge decodes a flat
+ * little-endian window: U3_HT_CFA0 = (devfn << 8) | reg for bus 0 and
+ * U3_HT_CFA1 = CFA0 + (bus << 16) + 0x01000000 for the others (see
+ * Linux arch/powerpc/platforms/powermac/pci.c).
+ */
+static uint32_t u3_ht_cfg_addr(pci_addr dev, uint8_t reg)
+{
+    uint32_t bus = PCI_BUS(dev);
+    uint32_t devfn = (PCI_DEV(dev) << 3) | PCI_FN(dev);
+    uint32_t off = (devfn << 8) | reg;
+
+    if (bus) {
+        off += (bus << 16) + 0x01000000;
+    }
+    return arch->cfg_base + off;
+}
+
+static uint8_t u3_ht_config_read8(pci_addr dev, uint8_t reg)
+{
+    return in_8((unsigned char *)u3_ht_cfg_addr(dev, reg));
+}
+
+static uint16_t u3_ht_config_read16(pci_addr dev, uint8_t reg)
+{
+    return in_le16((unsigned short *)u3_ht_cfg_addr(dev, reg));
+}
+
+static uint32_t u3_ht_config_read32(pci_addr dev, uint8_t reg)
+{
+    return in_le32((unsigned *)u3_ht_cfg_addr(dev, reg));
+}
+
+static void u3_ht_config_write8(pci_addr dev, uint8_t reg, uint8_t val)
+{
+    out_8((unsigned char *)u3_ht_cfg_addr(dev, reg), val);
+}
+
+static void u3_ht_config_write16(pci_addr dev, uint8_t reg, uint16_t val)
+{
+    out_le16((unsigned short *)u3_ht_cfg_addr(dev, reg), val);
+}
+
+static void u3_ht_config_write32(pci_addr dev, uint8_t reg, uint32_t val)
+{
+    out_le32((unsigned *)u3_ht_cfg_addr(dev, reg), val);
+}
+
+/*
+ * The PowerMac7,3 U3 HyperTransport PCI domain, enumerated by a second
+ * ob_pci_init() pass with this arch swapped in.  The bus is still
+ * empty (host bridge only); the mem/io windows follow the QEMU side.
+ */
+static const pci_arch_t u3_ht_arch = {
+    .name = "POWERMAC7_3_HT",
+    .vendor_id = PCI_VENDOR_ID_APPLE,
+    .device_id = PCI_DEVICE_ID_APPLE_U3_HT,
+    .cfg_base = 0xf2000000,
+    .cfg_len = 0x02000000,
+    .host_pci_base = 0x0,
+    .pci_mem_base = 0xfa000000,
+    .mem_len = 0x01000000,
+    .io_base = 0xf4000000,
+    .io_len = 0x00400000,
+    .irqs = { 0x1f, 0x20, 0x21, 0x22 },
+    .config_read8 = u3_ht_config_read8,
+    .config_read16 = u3_ht_config_read16,
+    .config_read32 = u3_ht_config_read32,
+    .config_write8 = u3_ht_config_write8,
+    .config_write16 = u3_ht_config_write16,
+    .config_write32 = u3_ht_config_write32,
+};
+
 unsigned long isa_io_base;
 
 extern struct _console_ops mac_console_ops, prep_console_ops;
@@ -987,8 +1064,26 @@ arch_of_init(void)
     case ARCH_POWERMAC7_3:
         macio_nvram_init("/", 0);
         ob_pci_init();
+        /*
+         * Second enumeration pass for the (still empty) HT domain,
+         * with the flat-window config accessors swapped in.
+         */
+        arch = &u3_ht_arch;
+        ob_pci_init();
+        arch = &known_arch[machine_id];
+        /*
+         * The generic host bridge path writes the scanned bus-range
+         * ({0, 0}); real firmware fixes the HT range to 0..0xef and
+         * Linux takes last_busno from it.
+         */
+        {
+            phandle_t ht = find_dev("/ht");
+            if (ht) {
+                uint32_t props[2] = { 0, 0xef };
+                set_property(ht, "bus-range", (char *)props, sizeof(props));
+            }
+        }
         ob_u3_init();
-        ob_u3_ht_init();
         break;
     default:
         ob_pci_init();
