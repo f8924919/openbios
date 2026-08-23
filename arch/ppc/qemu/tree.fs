@@ -26,12 +26,38 @@ include config.fs
 \ device-tree
 \ -------------------------------------------------------------
 
+\ Number of address cells on the root node.  PowerMac7,3 switches this
+\ to 2 at runtime (see arch_of_init()); everything else keeps the
+\ compile-time value.
+variable root-#adr-cells
+[IFDEF] CONFIG_PPC64 2 [ELSE] 1 [THEN] root-#adr-cells !
+
 " /" find-device
 \ Apple calls the root node device-tree
 " device-tree" device-name
 [IFDEF] CONFIG_PPC64 2 [ELSE] 1 [THEN] encode-int " #address-cells" property
 1 encode-int " #size-cells" property
 h# 05f5e100 encode-int " clock-frequency" property
+
+\ Root unit addresses follow #address-cells: one cell keeps the legacy
+\ bare hex form, two cells use the Apple "hi,lo" form (e.g. ht@0,f2000000).
+: decode-unit ( str len -- unit.lo [unit.hi] )
+  root-#adr-cells @ 2 = if
+    2 parse-nhex swap
+  else
+    parse-hex
+  then
+;
+
+: encode-unit ( unit.lo [unit.hi] -- str len )
+  root-#adr-cells @ 2 = if
+    pocket tohexstr
+    " ," pocket tmpstrcat >r
+    rot pocket tohexstr r> tmpstrcat drop
+  else
+    pocket tohexstr
+  then
+;
 
 	: dma-sync
 	  (dma-sync)
