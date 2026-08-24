@@ -201,6 +201,45 @@ openpic_init(const char *path, const char *name)
         fword("finish-device");
 }
 
+/*
+ * PowerMac7,3 exposes the mpic twice, just like the real machine does: once
+ * under /u3 (built before PCI enumeration) and once as a child of mac-io.
+ * Both describe the same registers, because the K2 BAR covers 0xf8000000 and
+ * the mpic sits at BAR + 0x40000.  Mac OS X needs the mac-io one: its
+ * AppleMacRISC4PE platform expert resolves "mac-io/mpic" with
+ * IORegistryEntry::fromPath() and dereferences the result without a NULL
+ * check, so a missing node panics the kernel.
+ *
+ * Deliberately leave out "device_type" and "interrupt-controller": Linux
+ * would pick a second open-pic node up as a cascaded slave and re-initialise
+ * the very same MMIO behind the master's back.  The interrupt controller the
+ * OS drives stays the one under /u3.
+ */
+static void
+macio_mpic_alias_init(const char *path)
+{
+        phandle_t dnode;
+        int props[2];
+        char buf[128];
+
+        fword("new-device");
+        push_str("mpic");
+        fword("device-name");
+
+        snprintf(buf, sizeof(buf), "%s/mpic", path);
+        dnode = find_dev(buf);
+        set_property(dnode, "compatible", "chrp,open-pic", 14);
+        set_property(dnode, "built-in", "", 0);
+        props[0] = __cpu_to_be32(IO_OPENPIC_OFFSET);
+        props[1] = __cpu_to_be32(IO_OPENPIC_SIZE);
+        set_property(dnode, "reg", (char *)&props, sizeof(props));
+        set_int_property(dnode, "#interrupt-cells", 2);
+        set_int_property(dnode, "#address-cells", 0);
+        set_int_property(dnode, "clock-frequency", 4166666);
+
+        fword("finish-device");
+}
+
 DECLARE_UNNAMED_NODE(ob_macio, 0, sizeof(int));
 
 /* ( str len -- addr ) */
@@ -453,10 +492,13 @@ ob_macio_keylargo_init(const char *path, phys_addr_t addr)
     /*
      * PowerMac7,3 exposes the mpic under /u3 (created before PCI
      * enumeration); only build the BAR-internal interrupt-controller
-     * when no open-pic node exists yet (mac99 family).
+     * when no open-pic node exists yet (mac99 family).  On PowerMac7,3
+     * add the display-only mac-io/mpic node Mac OS X looks for instead.
      */
     if (!dt_iterate_type(0, "open-pic")) {
         openpic_init(path, "interrupt-controller");
+    } else {
+        macio_mpic_alias_init(path);
     }
 
     aliases = find_dev("/aliases");
