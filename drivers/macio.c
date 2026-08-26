@@ -203,20 +203,25 @@ openpic_init(const char *path, const char *name)
 
 /*
  * PowerMac7,3 exposes the mpic twice, just like the real machine does: once
- * under /u3 (built before PCI enumeration) and once as a child of mac-io.
- * Both describe the same registers, because the K2 BAR covers 0xf8000000 and
- * the mpic sits at BAR + 0x40000.  Mac OS X needs the mac-io one: its
- * AppleMacRISC4PE platform expert resolves "mac-io/mpic" with
+ * as a child of mac-io and once under /u3.  Both describe the same
+ * registers, because the K2 BAR covers 0xf8000000 and the mpic sits at
+ * BAR + 0x40000.
+ *
+ * The real machine makes the mac-io one the root PIC and leaves /u3/mpic as
+ * its secondary, which is why Mac OS X hardcodes "mac-io/mpic": its
+ * AppleMacRISC4PE platform expert resolves that path with
  * IORegistryEntry::fromPath() and dereferences the result without a NULL
- * check, so a missing node panics the kernel.
+ * check.  This is the mirror, the one that is only there to be looked at.
  *
  * Deliberately leave out "device_type" and "interrupt-controller": Linux
  * would pick a second open-pic node up as a cascaded slave and re-initialise
- * the very same MMIO behind the master's back.  The interrupt controller the
- * OS drives stays the one under /u3.
+ * the very same MMIO behind the master's back.  Leave out "interrupts" as
+ * well -- the real secondary cascades into the root PIC, but there is only
+ * one emulated openpic here, so there is nothing to cascade from.
+ * "compatible" stays, because the real node has it.
  */
 static void
-macio_mpic_alias_init(const char *path)
+mpic_mirror_init(const char *path)
 {
         phandle_t dnode;
         int props[2];
@@ -375,7 +380,7 @@ ob_u3_init(void)
                 set_property(dnode, "ranges", (char *)ranges,
                              rn * sizeof(ranges[0]));
         }
-        openpic_init("/u3", "mpic");
+        mpic_mirror_init("/u3");
 
         fword("finish-device");
 }
@@ -490,16 +495,14 @@ ob_macio_keylargo_init(const char *path, phys_addr_t addr)
     escc_init(path, addr);
     macio_ide_init(path, addr, 2);
     /*
-     * PowerMac7,3 exposes the mpic under /u3 (created before PCI
-     * enumeration); only build the BAR-internal interrupt-controller
-     * when no open-pic node exists yet (mac99 family).  On PowerMac7,3
-     * add the display-only mac-io/mpic node Mac OS X looks for instead.
+     * The mpic below mac-io is the root PIC on both families; only its
+     * node name differs.  Real PowerMac7,3 firmware calls it "mpic" and
+     * mirrors it under /u3, while the mac99 KeyLargo machines call it
+     * "interrupt-controller".  Key off /u3, which only the former builds,
+     * and fall back to the mac99 name so that family cannot be dragged
+     * along by a mistake in the test.
      */
-    if (!dt_iterate_type(0, "open-pic")) {
-        openpic_init(path, "interrupt-controller");
-    } else {
-        macio_mpic_alias_init(path);
-    }
+    openpic_init(path, find_dev("/u3") ? "mpic" : "interrupt-controller");
 
     aliases = find_dev("/aliases");
     set_property(aliases, "mac-io", path, strlen(path) + 1);
