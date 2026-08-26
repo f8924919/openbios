@@ -30,10 +30,10 @@ struct pci_arch_t {
 	unsigned long cfg_base;
 	unsigned long cfg_len;
 	unsigned long host_pci_base; /* offset of PCI memory space within host memory space */
-	unsigned long pci_mem_base; /* in PCI memory space */
-	unsigned long mem_len;
-	unsigned long io_base;
-	unsigned long io_len;
+	unsigned long pci_mem_base; /* first free address in PCI memory space */
+	unsigned long mem_end;      /* end of the memory window, in PCI memory space */
+	unsigned long io_base;      /* host address of the I/O window (not PCI space) */
+	unsigned long io_end;       /* end of the I/O window, in PCI I/O space */
 	pci_range_t host_ranges[4];
 	uint8_t irqs[4];
 	/*

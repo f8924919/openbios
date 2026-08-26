@@ -1922,6 +1922,17 @@ static phandle_t ob_configure_pci_device(const char* parent_path,
     return phandle;
 }
 
+/*
+ * Report what is left of a window, given its end and the first address that
+ * is still free.  Both are in PCI space.  An arch that leaves the end unset,
+ * or one whose window is already full, has nothing available: say so rather
+ * than wrapping around and advertising a window that runs past 4 GB.
+ */
+static unsigned long pci_window_left(unsigned long end, unsigned long base)
+{
+    return end > base ? end - base : 0;
+}
+
 static void ob_pci_set_available(phandle_t host, unsigned long mem_base, unsigned long io_base)
 {
     /* Create an available property for both memory and IO space */
@@ -1930,9 +1941,11 @@ static void ob_pci_set_available(phandle_t host, unsigned long mem_base, unsigne
 
     ncells = 0;
     ncells += pci_encode_phys_addr(props + ncells, 0, MEMORY_SPACE_32, 0, 0, mem_base);
-    ncells += pci_encode_size(props + ncells, arch->mem_len - mem_base);
+    ncells += pci_encode_size(props + ncells,
+                              pci_window_left(arch->mem_end, mem_base));
     ncells += pci_encode_phys_addr(props + ncells, 0, IO_SPACE, 0, 0, io_base);
-    ncells += pci_encode_size(props + ncells, arch->io_len - io_base);
+    ncells += pci_encode_size(props + ncells,
+                              pci_window_left(arch->io_end, io_base));
 
     set_property(host, "available", (char *)props, ncells * sizeof(props[0]));
 }
