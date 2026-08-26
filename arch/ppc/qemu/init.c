@@ -1323,35 +1323,6 @@ arch_of_init(void)
     ofmem_register(find_dev("/memory"), find_dev(buf));
     node_methods_init(buf);
 
-    if (machine_id == ARCH_POWERMAC7_3) {
-        phandle_t cpunode = find_dev(buf);
-        phandle_t mpic = dt_iterate_type(0, "open-pic");
-
-        /*
-         * Point the cpu node at the open-pic that actually drives it.
-         *
-         * Mac OS X's AppleMacRISC4PE::platformAdjustService() only
-         * derives the cpu's parent interrupt controller from
-         * IORegistryEntry::fromPath("mac-io/mpic") when the node has no
-         * AAPL,parentIC of its own.  A real PowerMac7,3 exposes the root
-         * PIC below mac-io, but here that path resolves to the
-         * display-only mpic node (the one the platform expert needs to
-         * find so it does not dereference NULL), and no
-         * AppleMPICInterruptController ever attaches to it.  Letting the
-         * fallback run therefore makes MacRISC4CPU::start() wait forever
-         * in waitForService() for a driver that cannot appear, which in
-         * turn keeps the cpu interrupt controller from being enabled and
-         * deadlocks every mac-io driver behind it.
-         *
-         * Seeding the property with the real open-pic phandle keeps the
-         * fallback from running at all.  Other MacRISC platform experts
-         * do not consult this property, so only PowerMac7,3 needs it.
-         */
-        if (cpunode && mpic) {
-            set_int_property(cpunode, "AAPL,parentIC", mpic);
-        }
-    }
-
 #ifdef CONFIG_RTAS
     /* OldWorld Macs don't have an /rtas node. */
     switch (machine_id) {
