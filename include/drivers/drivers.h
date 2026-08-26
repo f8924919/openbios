@@ -14,8 +14,20 @@
 #include "config.h"
 
 #ifdef CONFIG_DRIVER_PCI
+#include "kernel/stack.h"       /* phandle_t */
 /* drivers/pci.c */
 int ob_pci_init(void);
+/*
+ * ob_pci_init() split in two.  Machines that enumerate more than one PCI
+ * domain need the interrupt map of an earlier domain to be written after a
+ * later one has been enumerated, because that is where the interrupt
+ * controller is: on PowerMac7,3 the mpic hangs off the mac-io, which only
+ * appears while the HT domain is being walked.  Enumeration itself keeps no
+ * state across domains, so the host bridge phandle is all a caller has to
+ * carry between the two halves.
+ */
+phandle_t ob_pci_enumerate(void);
+void ob_pci_set_interrupt_maps(phandle_t phandle_host);
 #endif
 
 #if defined(CONFIG_DRIVER_PCI) || defined(CONFIG_DRIVER_ESCC)

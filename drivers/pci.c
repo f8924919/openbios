@@ -2103,14 +2103,14 @@ static void ob_pci_bus_set_interrupt_map(phandle_t pcibus, phandle_t dnode,
     }
 }
 
-int ob_pci_init(void)
+phandle_t ob_pci_enumerate(void)
 {
     int bus, devnum, fn;
     uint8_t class, subclass;
     unsigned long mem_base, io_base;
 
     pci_config_t config = {}; /* host bridge */
-    phandle_t phandle_host = 0, intc;
+    phandle_t phandle_host = 0;
 
     PCI_DPRINTF("Initializing PCI host bridge...\n");
 
@@ -2152,9 +2152,21 @@ int ob_pci_init(void)
     /* create available attributes for the PCI bridge */
     ob_pci_set_available(phandle_host, mem_base, io_base);
 
+    return phandle_host;
+}
+
+void ob_pci_set_interrupt_maps(phandle_t phandle_host)
+{
+    phandle_t intc;
+
     /* configure the host bridge interrupt map */
     intc = ob_pci_host_set_interrupt_map(phandle_host);
     ob_pci_bus_set_interrupt_map(phandle_host, intc, ob_pci_host_bus_interrupt);
+}
+
+int ob_pci_init(void)
+{
+    ob_pci_set_interrupt_maps(ob_pci_enumerate());
 
     return 0;
 }

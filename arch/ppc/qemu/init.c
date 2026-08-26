@@ -1074,7 +1074,9 @@ arch_of_init(void)
         ob_pci_init();
         ob_unin_init();
         break;
-    case ARCH_POWERMAC7_3:
+    case ARCH_POWERMAC7_3: {
+        phandle_t agp_host, ht_host;
+
         /*
          * Real firmware exposes a 2/1-cell root.  Switch before any
          * root-relative reg/ranges property is generated (nvram, the
@@ -1103,23 +1105,33 @@ arch_of_init(void)
                              4 * sizeof(props[0]));
             }
         }
-        /*
-         * /u3 (with the mpic under it) must exist before the first
-         * ob_pci_init(): interrupt-map generation looks the openpic up
-         * with dt_iterate_type(0, "open-pic"), and the mac-io configure
-         * callback skips its BAR-internal interrupt-controller when an
-         * open-pic node is already present.
-         */
+        /* /u3 must exist before the PCI host bridges are enumerated. */
         ob_u3_init();
         macio_nvram_init("/", 0);
-        ob_pci_init();
+        /*
+         * Enumerate both domains before writing either interrupt map.
+         * The interrupt controller this machine runs on lives under the
+         * mac-io, which only comes into existence while the HT domain is
+         * being walked, so the AGP map cannot be written on the first
+         * pass.  Enumeration keeps no state across domains: the bus
+         * number restarts at 0 and the memory/IO cursors come from
+         * arch, so the host bridge phandle is all that has to be kept.
+         */
+        agp_host = ob_pci_enumerate();
         /*
          * Second enumeration pass for the HT domain, with the
          * flat-window config accessors swapped in.
          */
         arch = &u3_ht_arch;
-        ob_pci_init();
+        ht_host = ob_pci_enumerate();
+        /*
+         * Write the maps with each domain's arch swapped in:
+         * ob_pci_host_bus_interrupt() picks the PCI interrupt lines out
+         * of arch->irqs[], which differs between the two.
+         */
+        ob_pci_set_interrupt_maps(ht_host);
         arch = &known_arch[machine_id];
+        ob_pci_set_interrupt_maps(agp_host);
         /*
          * The generic host bridge path writes the scanned bus-range
          * ({0, 0}); real firmware fixes the HT range to 0..0xef and
@@ -1133,6 +1145,7 @@ arch_of_init(void)
             }
         }
         break;
+    }
     default:
         ob_pci_init();
     }
