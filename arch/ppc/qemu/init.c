@@ -587,6 +587,22 @@ cpu_970_init(const struct cpudef *cpu)
     /* The 970 also implements the HIOR which we need to set to 0 */
 
     mtspr(S_HIOR, 0);
+
+    /*
+     * Apple firmware leaves the 970 clearing 32 bytes per dcbz rather than a
+     * full 128-byte line, and hands the part to the OS that way.  Mac OS X
+     * depends on it: its fault handler issues four dcbz to cover one line
+     * (osfmk/ppc/hw_vm.s).  Linux expects the mode to be on as well and turns
+     * it off itself in __cpu_preinit_ppc970(), which needs MSR[HV] -- so this
+     * is only safe once the 970 is strapped into hypervisor state.
+     *
+     * Read-modify-write in one asm block: OpenBIOS is built 32-bit, so going
+     * through a C variable would truncate the upper half of this 64-bit SPR.
+     */
+    asm volatile("mfspr 11, 1014\n\t"
+                 "ori   11, 11, 0x0080\n\t"
+                 "mtspr 1014, 11\n\t"
+                 "isync" ::: "r11");
 }
 
 static const struct cpudef ppc_defs[] = {

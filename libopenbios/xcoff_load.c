@@ -144,48 +144,6 @@ out:
 	return retval;
 }
 
-#ifdef CONFIG_PPC
-#include "asm/processor.h"
-
-/*
- * Mac OS X's bootloader (BootX) is an XCOFF client program, and the kernel
- * it loads assumes the 970 clears only 32 bytes per dcbz - it issues four
- * dcbz to cover one 128-byte line (osfmk/ppc/hw_vm.s).  Real PowerMac
- * firmware leaves the 970 in that mode for Mac OS X.  Do the same here,
- * but only on this path: an OS which expects dcbz to clear a full cache
- * line (as advertised by d-cache-block-size) is loaded through one of the
- * other loaders and must not see the 32-byte mode.
- *
- * Restricting it to this path is a workaround, not the whole story.  Real
- * firmware sets the mode unconditionally and Linux undoes it in
- * __cpu_preinit_ppc970(), but that runs only in hypervisor mode, which the
- * emulated 970 does not have - so an unconditional setting here leaves
- * Linux with a 32-byte dcbz it cannot turn off, and it dies clearing
- * pages.  Two known limitations follow from the narrower rule: a 32-bit
- * PowerMac Linux zImage is XCOFF too and would wrongly get the 32-byte
- * mode on a 970, and the mode stays on after the client returns to the
- * prompt.  Neither matters for the case this exists to serve.
- */
-static void set_dcbz32_for_macos(void)
-{
-	unsigned long pvr = mfpvr() >> 16;
-
-	/* 970, 970FX, 970MP */
-	if (pvr == 0x39 || pvr == 0x3c || pvr == 0x44) {
-		/*
-		 * Read-modify-write in one asm block: OpenBIOS is built
-		 * 32-bit, so going through a C variable would truncate the
-		 * upper half of this 64-bit SPR.
-		 */
-		asm volatile("mfspr 11, 1014\n\t"
-			     "ori   11, 11, 0x0080\n\t"
-			     "mtspr 1014, 11\n\t"
-			     "isync" ::: "r11");
-	}
-}
-#else
-static void set_dcbz32_for_macos(void) { }
-#endif
 
 void
 xcoff_init_program(void)
@@ -276,7 +234,6 @@ xcoff_init_program(void)
 	feval("load-state >ls.entry !");
 	feval("xcoff load-state >ls.file-type !");
 
-	set_dcbz32_for_macos();
 
 	arch_init_program();
 
