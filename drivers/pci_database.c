@@ -1211,6 +1211,26 @@ static const pci_dev_t misc_pci[] = {
         1, 1, 1,
         &macio_keylargo_config_cb, NULL,
     },
+    /*
+     * K2 KeyLargo Mac I/O, the one a PowerMac7,3 has.  Same silicon layout
+     * as the KeyLargo above, so it shares the config callback and gets the
+     * identical set of child nodes; only the name it goes by differs.
+     *
+     * Linux picks the macio chip type from "compatible" alone
+     * (probe_one_macio() in arch/powerpc/platforms/powermac/feature.c tries
+     * "keylargo" before "K2-Keylargo", and of_device_is_compatible() is a
+     * whole-string match), so this string is what tells a 7,3 apart from a
+     * mac99.  Mac OS X's AppleK2 matches it too, spelled either way.
+     *
+     * The model is not verified against real hardware; it is chosen to
+     * agree with the compatible rather than left saying KeyLargo.
+     */
+    {
+        PCI_VENDOR_ID_APPLE, PCI_DEVICE_ID_APPLE_K2_KEYL,
+        "mac-io", "mac-io", "AAPL,K2", "K2-Keylargo\0",
+        1, 1, 1,
+        &macio_keylargo_config_cb, NULL,
+    },
     {
         0xFFFF, 0xFFFF,
         NULL, NULL, NULL, NULL,
