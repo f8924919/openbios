@@ -48,7 +48,7 @@ struct cpudef {
     int icache_sets, dcache_sets;
     int icache_block_size, dcache_block_size;
     int tlb_sets, tlb_size;
-    void (*initfn)(const struct cpudef *cpu);
+    void (*initfn)(const struct cpudef *cpu, int index);
 };
 
 static uint16_t machine_id = 0;
@@ -396,7 +396,7 @@ push_physaddr(phys_addr_t value)
 extern unsigned long timer_freq;
 
 static void
-cpu_generic_init(const struct cpudef *cpu)
+cpu_generic_init(const struct cpudef *cpu, int index)
 {
     push_str("/cpus");
     fword("find-device");
@@ -470,7 +470,12 @@ cpu_generic_init(const struct cpudef *cpu)
     push_str("bus-frequency");
     fword("property");
 
-    push_str("running");
+    /*
+     * Only the processor running this firmware is running.  The others are
+     * held in reset until the OS releases them, so saying otherwise would
+     * be a lie to anything that reads it.
+     */
+    push_str(index == 0 ? "running" : "idle");
     fword("encode-string");
     push_str("state");
     fword("property");
@@ -495,20 +500,20 @@ cpu_add_pir_property(void)
 }
 
 static void
-cpu_604_init(const struct cpudef *cpu)
+cpu_604_init(const struct cpudef *cpu, int index)
 {
-    cpu_generic_init(cpu);
+    cpu_generic_init(cpu, index);
     cpu_add_pir_property();
 
     fword("finish-device");
 }
 
 static void
-cpu_750_init(const struct cpudef *cpu)
+cpu_750_init(const struct cpudef *cpu, int index)
 {
-    cpu_generic_init(cpu);
+    cpu_generic_init(cpu, index);
 
-    PUSH(0);
+    PUSH(index);
     fword("encode-int");
     push_str("reg");
     fword("property");
@@ -517,9 +522,9 @@ cpu_750_init(const struct cpudef *cpu)
 }
 
 static void
-cpu_g4_init(const struct cpudef *cpu)
+cpu_g4_init(const struct cpudef *cpu, int index)
 {
-    cpu_generic_init(cpu);
+    cpu_generic_init(cpu, index);
     cpu_add_pir_property();
 
     fword("finish-device");
@@ -559,16 +564,33 @@ ppc64_patch_handlers(void)
 #pragma GCC diagnostic pop
 #endif
 
-static void
-cpu_970_init(const struct cpudef *cpu)
-{
-    cpu_generic_init(cpu);
+/*
+ * Where the KeyLargo reset line for each processor lives, as a byte offset
+ * into the mac-io registers.  Linux reads this out of the node as
+ * "soft-reset" and writes the GPIO itself (g5_reset_cpu()), and refuses to
+ * start a processor whose node does not carry it.  The values are
+ * KL_GPIO_RESET_CPUn from arch/powerpc/include/asm/keylargo.h.
+ */
+static const int cpu_soft_reset[] = { 0x5b, 0x5c, 0x67, 0x68 };
 
-    PUSH(0);
+static void
+cpu_970_init(const struct cpudef *cpu, int index)
+{
+    cpu_generic_init(cpu, index);
+
+    PUSH(index);
     fword("encode-int");
     push_str("reg");
     fword("property");
-    
+
+    if (machine_id == ARCH_POWERMAC7_3 &&
+        index < (int)(sizeof(cpu_soft_reset) / sizeof(cpu_soft_reset[0]))) {
+        PUSH(cpu_soft_reset[index]);
+        fword("encode-int");
+        push_str("soft-reset");
+        fword("property");
+    }
+
     PUSH(0);
     PUSH(0);
     fword("encode-bytes");
@@ -576,6 +598,16 @@ cpu_970_init(const struct cpudef *cpu)
     fword("property");
 
     fword("finish-device");
+
+    /*
+     * Everything below touches this processor's registers, not its node.
+     * Only the one running the firmware is here to be set up; the others
+     * are still in reset and would lose any of it to the reset that starts
+     * them anyway.
+     */
+    if (index != 0) {
+        return;
+    }
 
 #ifdef CONFIG_PPC_64BITSUPPORT
     /* The 970 is a PPC64 CPU, so we need to activate
@@ -1061,6 +1093,7 @@ arch_of_init(void)
     char buf[256], qemu_uuid[16];
     const char *stdin_path, *stdout_path, *boot_path;
     uint32_t temp = 0;
+    uint32_t nb_cpus;
     char *boot_device, *bootorder_file;
     uint32_t bootorder_sz, sz;
     ofmem_t *ofmem = ofmem_arch_get_private();
@@ -1181,9 +1214,9 @@ arch_of_init(void)
     temp = fw_cfg_read_i32(FW_CFG_ID);
     printk(" version %d machine id %d\n", temp, machine_id);
 
-    temp = fw_cfg_read_i32(FW_CFG_NB_CPUS);
+    nb_cpus = fw_cfg_read_i32(FW_CFG_NB_CPUS);
 
-    printk("CPUs: %x\n", temp);
+    printk("CPUs: %x\n", nb_cpus);
 
     ram_size = ofmem->ramsize;
 
@@ -1332,10 +1365,24 @@ arch_of_init(void)
     fword("property");
 
     cpu = id_cpu();
-    cpu->initfn(cpu);
+    /*
+     * Describe every processor the machine has: Linux counts the nodes with
+     * device_type "cpu" and gives up on SMP if it finds only one
+     * (smp_core99_probe()).  Use the number that are actually present
+     * rather than the machine's maximum, or the OS would sit waiting for a
+     * processor nobody created.
+     */
+    for (temp = 0; temp < nb_cpus; temp++) {
+        cpu->initfn(cpu, temp);
+    }
     printk("CPU type %s\n", cpu->name);
 
-    snprintf(buf, sizeof(buf), "/cpus/%s", cpu->name);
+    /*
+     * The MMU node is the boot processor's.  find-device on a name without
+     * a unit address returns the first match, which is node 0 because it
+     * was created first, but say so explicitly rather than relying on that.
+     */
+    snprintf(buf, sizeof(buf), "/cpus/%s@0", cpu->name);
     ofmem_register(find_dev("/memory"), find_dev(buf));
     node_methods_init(buf);
 
