@@ -32,6 +32,11 @@
 #define IO_OPENPIC_SIZE    0x00040000
 #define IO_OPENPIC_OFFSET  0x00040000
 
+/* The Keywest i2c sits inside U3, one 4KB page above the U3 registers */
+#define IO_U3_BASE         0xf8000000
+#define IO_U3_I2C_OFFSET   0x00001000
+#define IO_U3_I2C_SIZE     0x00001000
+
 static char *nvram;
 
 static int macio_nvram_shift(void)
@@ -245,6 +250,79 @@ mpic_mirror_init(const char *path)
         fword("finish-device");
 }
 
+/*
+ * The Keywest i2c controller inside U3, and the clock generator that hangs
+ * off it.  Three different consumers read this node and each wants
+ * something the others do not:
+ *
+ *  - Darwin's AppleI2C matches on the name "i2c" alone, but insists that
+ *    AAPL,driver-name *begins* with ".i2c-uni-n" (strncmp of 10 bytes,
+ *    dot included).  Without it the PPCI2CInterface.i2c-uni-n resource is
+ *    never published and MacRISC4CPU cannot find the bus.
+ *  - Linux low_i2c.c only looks at nodes whose device_type is "i2c" and
+ *    whose compatible contains "keywest-i2c".
+ *  - Linux smp.c walks to i2c-hwclock and requires the *parent* to be
+ *    compatible with "uni-n-i2c" before it will sync the timebase.
+ *
+ * reg is u3-relative because /u3 carries a ranges entry, while AAPL,address
+ * is the absolute physical address -- the two are deliberately different
+ * and both are needed.
+ */
+static void
+u3_i2c_init(const char *path)
+{
+        phandle_t dnode;
+        uint32_t props[2];
+        char buf[128];
+
+        fword("new-device");
+        push_str("i2c");
+        fword("device-name");
+
+        snprintf(buf, sizeof(buf), "%s/i2c", path);
+        dnode = find_dev(buf);
+
+        set_property(dnode, "device_type", "i2c", 4);
+        set_property(dnode, "compatible", "keywest-i2c\0uni-n-i2c", 22);
+        set_property(dnode, "AAPL,driver-name", ".i2c-uni-n", 11);
+
+        props[0] = __cpu_to_be32(IO_U3_I2C_OFFSET);
+        props[1] = __cpu_to_be32(IO_U3_I2C_SIZE);
+        set_property(dnode, "reg", (char *)&props, sizeof(props));
+
+        set_int_property(dnode, "AAPL,address",
+                         IO_U3_BASE + IO_U3_I2C_OFFSET);
+        set_int_property(dnode, "AAPL,address-step", 0x10);
+        set_int_property(dnode, "AAPL,i2c-rate", 100);
+
+        /*
+         * The child unit address is synthesised from reg using these, and
+         * Darwin looks the chip up by the path /u3/i2c/i2c-hwclock@d2.
+         * Without the cells the "@d2" never appears and the lookup fails.
+         */
+        set_int_property(dnode, "#address-cells", 1);
+        set_int_property(dnode, "#size-cells", 0);
+
+        fword("new-device");
+        push_str("i2c-hwclock");
+        fword("device-name");
+
+        snprintf(buf, sizeof(buf), "%s/i2c/i2c-hwclock", path);
+        dnode = find_dev(buf);
+        set_property(dnode, "compatible", "pulsar-legacy-slewing", 22);
+        /*
+         * 0xd2 is the 8-bit form.  Linux reads this one value three ways:
+         * smp.c switches on it, i2c-powermac turns it into the 7-bit
+         * address with (reg & 0xff) >> 1, and low_i2c takes reg >> 8 as
+         * the channel number.
+         */
+        set_int_property(dnode, "reg", 0xd2);
+
+        fword("finish-device");
+
+        fword("finish-device");
+}
+
 DECLARE_UNNAMED_NODE(ob_macio, 0, sizeof(int));
 
 /* ( str len -- addr ) */
@@ -381,6 +459,7 @@ ob_u3_init(void)
                              rn * sizeof(ranges[0]));
         }
         mpic_mirror_init("/u3");
+        u3_i2c_init("/u3");
 
         fword("finish-device");
 }
