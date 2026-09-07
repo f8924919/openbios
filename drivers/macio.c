@@ -224,6 +224,18 @@ openpic_init(const char *path, const char *name)
  * well -- the real secondary cascades into the root PIC, but there is only
  * one emulated openpic here, so there is nothing to cascade from.
  * "compatible" stays, because the real node has it.
+ *
+ * The node is called "mpic-mirror" rather than "mpic", which is what the
+ * real machine calls it.  Mac OS X 10.5 refuses to register a nub for the
+ * second node of that name: the mirror is published first, below /u3, and
+ * when AppleK2 later publishes its own "mpic" the nub attaches but is never
+ * registered, so mac-io ends up with no interrupt controller at all.  Every
+ * driver below it that needs an interrupt then stalls -- KeyLargoATA never
+ * scans the bus and AppleVIA never finishes the PMU handshake, which is how
+ * this was found.  10.4 tolerates the duplicate.  Renaming the mirror is
+ * invisible to Linux, which looks the controller up by device_type
+ * ("open-pic") and by the "interrupt-controller" property, neither of which
+ * the mirror has.
  */
 static void
 mpic_mirror_init(const char *path)
@@ -233,10 +245,10 @@ mpic_mirror_init(const char *path)
         char buf[128];
 
         fword("new-device");
-        push_str("mpic");
+        push_str("mpic-mirror");
         fword("device-name");
 
-        snprintf(buf, sizeof(buf), "%s/mpic", path);
+        snprintf(buf, sizeof(buf), "%s/mpic-mirror", path);
         dnode = find_dev(buf);
         set_property(dnode, "compatible", "chrp,open-pic", 14);
         set_property(dnode, "built-in", "", 0);
