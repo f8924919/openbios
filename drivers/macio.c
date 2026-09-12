@@ -12,6 +12,7 @@
 #include "arch/common/nvram.h"
 #include "packages/nvram.h"
 #include "libopenbios/bindings.h"
+#include "libopenbios/ofmem.h"
 #include "libc/byteorder.h"
 #include "libc/vsprintf.h"
 
@@ -26,6 +27,25 @@
 #define OW_IO_NVRAM_OFFSET 0x00060000
 #define OW_IO_NVRAM_SHIFT  4
 
+/*
+ * The NewWorld part is a flash chip.  Raw stores are taken as commands, so
+ * an image written byte by byte mostly vanishes: only the bytes that follow
+ * a 0x40/0x10 in the data get programmed, and the checksums end up wrong.
+ * Program it the way Mac OS X does instead.
+ */
+#define NV_CMD_ERASE_SETUP	0x20
+#define NV_CMD_ERASE_CONFIRM	0xd0
+#define NV_CMD_WRITE_SETUP	0x40
+#define NV_CMD_READ_ARRAY	0xff
+#define NV_STATUS_DONE		0x80
+#define NV_STATUS_ERR		0x38
+#define NW_NVRAM_BANK_SIZE	0x2000
+#define NW_NVRAM_NBANKS		2
+#define CORE99_HDR_SIZE		0x20
+#define CORE99_ADLER_OFF	0x10
+#define CORE99_GEN_OFF		0x14
+#define CORE99_SIGNATURE	0x5a
+
 #define NW_IO_NVRAM_SIZE   0x00004000
 #define NW_IO_NVRAM_OFFSET 0xfff04000
 
@@ -37,7 +57,12 @@
 #define IO_U3_I2C_OFFSET   0x00001000
 #define IO_U3_I2C_SIZE     0x00001000
 
-static char *nvram;
+/*
+ * volatile: these are stores to a flash part, not to memory.  Without it
+ * the compiler drops the erase setup as a dead store (it is overwritten
+ * by the confirm at the same address) and folds the status read away.
+ */
+static volatile char *nvram;
 
 static int macio_nvram_shift(void)
 {
@@ -50,14 +75,26 @@ static int macio_nvram_shift(void)
 	return nvram_flat ? 0 : 1;
 }
 
+/* Bytes of the part one core99 bank takes up, header included. */
+static int macio_nvram_bank_size(void)
+{
+	return (NW_IO_NVRAM_SIZE >> macio_nvram_shift()) / NW_NVRAM_NBANKS;
+}
+
+/*
+ * What the nvram package gets to see.  The part holds two banks, each a
+ * complete image with its own generation and adler32, and the guests pick
+ * the newer one.  Handing the package both of them makes it read the first
+ * and write the last, so only ever show it the payload of a single bank.
+ */
 int
 macio_get_nvram_size(void)
 {
 	int shift = macio_nvram_shift();
         if (is_oldworld())
                 return OW_IO_NVRAM_SIZE >> shift;
-        else
-                return NW_IO_NVRAM_SIZE >> shift;
+
+	return macio_nvram_bank_size() - CORE99_HDR_SIZE;
 }
 
 static unsigned long macio_nvram_offset(void)
@@ -106,7 +143,27 @@ void macio_nvram_init(const char *path, phys_addr_t addr)
         nvram_offset = macio_nvram_offset();
         nvram_size = macio_nvram_size();
 
-	nvram = (char*)addr + nvram_offset;
+	/*
+	 * The NewWorld NVRAM lives in the top megabyte, which ea_to_phys()
+	 * redirects to the ROM copy in RAM before it looks at a translation,
+	 * so stores through a 1:1 pointer never reach the device.  Take a
+	 * mapping out of the I/O range instead.  OldWorld keeps the plain
+	 * pointer: its NVRAM hangs off the macio base, clear of that window.
+	 */
+	nvram = (volatile char *)((uintptr_t)addr + nvram_offset);
+	if (!is_oldworld()) {
+		phys_addr_t phys = (phys_addr_t)addr + nvram_offset;
+		ucell virt = ofmem_claim_io(-1, nvram_size, PAGE_SIZE);
+
+		if (virt != (ucell)-1) {
+			ofmem_map(phys & PAGE_MASK, virt, nvram_size,
+				  ofmem_arch_io_translation_mode(phys));
+			nvram = (volatile char *)(uintptr_t)(virt + (phys & ~PAGE_MASK));
+		} else {
+			printk("macio: no I/O space for the NVRAM, "
+			       "writes will not reach the device\n");
+		}
+	}
 	nvconf_init();
 	snprintf(buf, sizeof(buf), "%s", path);
 	dnode = nvram_init(buf);
@@ -150,14 +207,162 @@ dump_nvram(void)
 #endif
 
 
+/* Wait out an erase.  Reads return the status register until the reset. */
+static int nvram_wait(unsigned int it_shift, int off)
+{
+	unsigned char status;
+	int i;
+
+	for (i = 0; i < 100000; i++) {
+		status = nvram[off << it_shift];
+		if (status & NV_STATUS_DONE)
+			return (status & NV_STATUS_ERR) ? -1 : 0;
+	}
+	return -1;
+}
+
+static unsigned int nv_be32(unsigned int it_shift, int off)
+{
+	unsigned int v = 0;
+	int i;
+
+	for (i = 0; i < 4; i++)
+		v = (v << 8) | (unsigned char)nvram[(off + i) << it_shift];
+	return v;
+}
+
+/*
+ * The bank the guests would read: valid header, and the larger generation
+ * wins.  Returns -1 when neither bank holds a usable image.
+ */
+static int macio_nvram_cur_bank(unsigned int *genp)
+{
+	unsigned int it_shift = macio_nvram_shift();
+	int bank_size = macio_nvram_bank_size();
+	unsigned char hdr[16];
+	unsigned int gen, best_gen = 0;
+	int b, i, base, best = -1;
+
+	for (b = 0; b < NW_NVRAM_NBANKS; b++) {
+		base = b * bank_size;
+		for (i = 0; i < 16; i++)
+			hdr[i] = nvram[(base + i) << it_shift];
+		if (hdr[0] != CORE99_SIGNATURE)
+			continue;
+		if (nvpart_checksum_buf(hdr) != hdr[1])
+			continue;
+		gen = nv_be32(it_shift, base + CORE99_GEN_OFF);
+		if (best < 0 || gen > best_gen) {
+			best = b;
+			best_gen = gen;
+		}
+	}
+	*genp = (best < 0) ? 0 : best_gen;
+	return best;
+}
+
 void
 macio_nvram_put(char *buf)
 {
-	int i;
-        unsigned int it_shift = macio_nvram_shift();
+	unsigned int it_shift = macio_nvram_shift();
+	int size = arch_nvram_size();
+	unsigned char hdr[CORE99_HDR_SIZE];
+	unsigned int gen, adler;
+	int bank_size, cur, tgt, base, i;
 
-	for (i=0; i < arch_nvram_size(); i++)
-		nvram[i << it_shift] = buf[i];
+	if (is_oldworld()) {
+		for (i=0; i < size; i++)
+			nvram[i << it_shift] = buf[i];
+#ifdef DUMP_NVRAM
+		printk("new nvram:\n");
+		dump_nvram();
+#endif
+		return;
+	}
+
+	bank_size = macio_nvram_bank_size();
+	cur = macio_nvram_cur_bank(&gen);
+
+	/*
+	 * Leave the part alone when the bank in use already holds this
+	 * image.  update_nvram() runs on every boot, and erasing a bank
+	 * that does not have to change would put the image at risk for
+	 * nothing.
+	 */
+	if (cur >= 0) {
+		base = cur * bank_size + CORE99_HDR_SIZE;
+		for (i = 0; i < size; i++)
+			if (nvram[(base + i) << it_shift] != buf[i])
+				break;
+		if (i == size)
+			return;
+	}
+
+	/*
+	 * Write the bank that is not in use, so that a write cut short
+	 * leaves the guests reading the one that still is.  The generation
+	 * decides the winner, and 0 reads as "invalid" to Mac OS X, so it
+	 * is skipped on wrap.
+	 */
+	tgt = (cur < 0) ? 0 : !cur;
+	gen++;
+	if (!gen)
+		gen = 1;
+
+	memset(hdr, 0, sizeof(hdr));
+	hdr[0] = CORE99_SIGNATURE;
+	hdr[2] = (CORE99_HDR_SIZE / 16) >> 8;
+	hdr[3] = (CORE99_HDR_SIZE / 16) & 0xff;
+	memcpy(&hdr[4], "nvram", 5);
+	hdr[CORE99_GEN_OFF + 0] = gen >> 24;
+	hdr[CORE99_GEN_OFF + 1] = gen >> 16;
+	hdr[CORE99_GEN_OFF + 2] = gen >> 8;
+	hdr[CORE99_GEN_OFF + 3] = gen;
+
+	/* Covers everything from the generation on, so it comes last. */
+	adler = adler32_buf(1, &hdr[CORE99_GEN_OFF],
+			    CORE99_HDR_SIZE - CORE99_GEN_OFF);
+	adler = adler32_buf(adler, (const unsigned char *)buf, size);
+	hdr[CORE99_ADLER_OFF + 0] = adler >> 24;
+	hdr[CORE99_ADLER_OFF + 1] = adler >> 16;
+	hdr[CORE99_ADLER_OFF + 2] = adler >> 8;
+	hdr[CORE99_ADLER_OFF + 3] = adler;
+
+	/* The checksum only reaches the first 16 bytes. */
+	hdr[1] = nvpart_checksum_buf(hdr);
+
+	base = tgt * bank_size;
+	nvram[base << it_shift] = NV_CMD_ERASE_SETUP;
+	nvram[base << it_shift] = NV_CMD_ERASE_CONFIRM;
+	if (nvram_wait(it_shift, base) < 0) {
+		/*
+		 * Leave the bank alone rather than program a half erased
+		 * one: the other bank still holds a good image, and that is
+		 * what the guests keep reading.
+		 */
+		printk("macio: nvram erase failed at %x, not programming\n",
+		       base);
+		nvram[base << it_shift] = NV_CMD_READ_ARRAY;
+		return;
+	}
+	nvram[base << it_shift] = NV_CMD_READ_ARRAY;
+
+	for (i = 0; i < CORE99_HDR_SIZE; i++) {
+		if (hdr[i] == 0xff)
+			continue;
+		nvram[(base + i) << it_shift] = NV_CMD_WRITE_SETUP;
+		nvram[(base + i) << it_shift] = hdr[i];
+	}
+	for (i = 0; i < size; i++) {
+		if ((unsigned char)buf[i] == 0xff)
+			continue;
+		nvram[(base + CORE99_HDR_SIZE + i) << it_shift] =
+			NV_CMD_WRITE_SETUP;
+		nvram[(base + CORE99_HDR_SIZE + i) << it_shift] = buf[i];
+	}
+
+	/* Put the part back in read mode, or the next read returns status. */
+	nvram[base << it_shift] = NV_CMD_READ_ARRAY;
 #ifdef DUMP_NVRAM
 	printk("new nvram:\n");
 	dump_nvram();
@@ -167,12 +372,26 @@ macio_nvram_put(char *buf)
 void
 macio_nvram_get(char *buf)
 {
-	int i;
-        unsigned int it_shift = macio_nvram_shift();
+	unsigned int it_shift = macio_nvram_shift();
+	int size = arch_nvram_size();
+	unsigned int gen;
+	int cur, base, i;
 
-	for (i=0; i< arch_nvram_size(); i++)
-                buf[i] = nvram[i << it_shift];
+	if (is_oldworld()) {
+		for (i=0; i< size; i++)
+			buf[i] = nvram[i << it_shift];
+#ifdef DUMP_NVRAM
+		printk("current nvram:\n");
+		dump_nvram();
+#endif
+		return;
+	}
 
+	cur = macio_nvram_cur_bank(&gen);
+	base = ((cur < 0) ? 0 : cur * macio_nvram_bank_size())
+		+ CORE99_HDR_SIZE;
+	for (i = 0; i < size; i++)
+		buf[i] = nvram[(base + i) << it_shift];
 #ifdef DUMP_NVRAM
 	printk("current nvram:\n");
 	dump_nvram();

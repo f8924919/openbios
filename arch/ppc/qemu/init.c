@@ -997,16 +997,13 @@ static void ffilll(void)
 #define DO8(buf,i)  DO4(buf,i); DO4(buf,i+4);
 #define DO16(buf)   DO8(buf,0); DO8(buf,8);
 
-static void adler32(void)
+/*
+ * The buffer is walked as unsigned bytes: the sums have to come out the
+ * same as zlib's, which is what the guests and QEMU compute.  Plain char
+ * is unsigned on PowerPC, but saying so keeps it true either way.
+ */
+uint32_t adler32_buf(uint32_t adler, const unsigned char *buf, uint32_t len)
 {
-    uint32_t len = (uint32_t)POP();
-    char *buf = (char *)POP();
-    uint32_t adler = (uint32_t)POP();
-
-    if (buf == NULL) {
-        RET(-1);
-    }
-
     uint32_t base = 65521;
     uint32_t nmax = 5552;
 
@@ -1034,7 +1031,20 @@ static void adler32(void)
         s2 %= base;
     }
 
-    RET(s2 << 16 | s1);
+    return s2 << 16 | s1;
+}
+
+static void adler32(void)
+{
+    uint32_t len = (uint32_t)POP();
+    char *buf = (char *)POP();
+    uint32_t adler = (uint32_t)POP();
+
+    if (buf == NULL) {
+        RET(-1);
+    }
+
+    RET(adler32_buf(adler, (const unsigned char *)buf, len));
 }
 
 /* ( size -- virt ) */

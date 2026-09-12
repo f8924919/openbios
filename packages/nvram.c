@@ -56,10 +56,15 @@ static struct {
 /*	generic								*/
 /************************************************************************/
 
-static unsigned int
-nvpart_checksum( nvpart_t* hdr )
+/*
+ * The CHRP header checksum.  Covers p[0] and p[2..15], so anything a
+ * caller stores past the 16th byte (the core99 adler and generation)
+ * does not feed into it.  Taken as bytes so that callers outside this
+ * file do not need nvpart_t.
+ */
+unsigned int
+nvpart_checksum_buf( const unsigned char *p )
 {
-	unsigned char *p = (unsigned char*)hdr;
 	int i, val = p[0];
 
 	for( i=2; i<16; i++ ) {
@@ -68,6 +73,12 @@ nvpart_checksum( nvpart_t* hdr )
 			val = (val - 256 + 1) & 0xff;
 	}
 	return val;
+}
+
+static unsigned int
+nvpart_checksum( nvpart_t* hdr )
+{
+	return nvpart_checksum_buf( (const unsigned char*)hdr );
 }
 
 static inline int

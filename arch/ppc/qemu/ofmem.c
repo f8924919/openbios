@@ -121,16 +121,27 @@ void ofmem_arch_map_pages(phys_addr_t phys, ucell virt, ucell size, ucell mode)
     /* none yet */
 }
 
+/*
+ * Virtual range ofmem_claim_io() hands out.  It has to stay clear of the
+ * top megabyte, which ea_to_phys() gives to the ROM copy in RAM before it
+ * consults any translation, and of everything the machine maps 1:1: RAM
+ * below IO_BASE, PCI memory at 0x80000000, and the bridges at 0xf0000000
+ * (pci), 0xf2000000 (ht) and 0xf8000000 (u3).  0x90000000 is free.
+ *
+ * Leaving these at 0 makes find_area() hand out EA 0, which is where the
+ * exception vectors live.
+ */
+#define IOMEM_BASE		0x90000000UL
+#define IOMEM_TOP		0xa0000000UL
+
 ucell ofmem_arch_get_iomem_base(void)
 {
-    /* Currently unused */
-    return 0;
+    return IOMEM_BASE;
 }
 
 ucell ofmem_arch_get_iomem_top(void)
 {
-    /* Currently unused */
-    return 0;
+    return IOMEM_TOP;
 }
 
 retain_t *ofmem_arch_get_retained(void)

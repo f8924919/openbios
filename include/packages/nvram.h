@@ -22,5 +22,6 @@
 extern void	nvconf_init( void );
 extern phandle_t	nvram_init( const char *path );
 extern void	update_nvram( void );
+extern unsigned int	nvpart_checksum_buf( const unsigned char *hdr );
 
 #endif   /* _H_NVRAM_PACKAGE */

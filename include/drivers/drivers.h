@@ -59,6 +59,12 @@ static inline int has_adb(void)
 	return 0;
 }
 #endif
+/* arch/ppc/qemu/init.c */
+#ifdef CONFIG_PPC
+extern uint32_t adler32_buf(uint32_t adler, const unsigned char *buf,
+			    uint32_t len);
+#endif
+
 #define AAPL(_cmd)      do { if (is_apple()) _cmd; } while(0)
 #define OLDWORLD(_cmd)  do { if (is_oldworld()) _cmd; } while(0)
 #define NEWWORLD(_cmd)  do { if (is_newworld()) _cmd; } while(0)
