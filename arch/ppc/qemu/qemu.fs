@@ -99,6 +99,17 @@ variable keyboard-phandle 0 keyboard-phandle !
 \ Mac OF specific words
 \ -------------------------------------------------------------------------
 
+\ Apple's Open Firmware boots with mac-boot, and that is what bless(8)
+\ writes into boot-command when the Startup Disk pane picks a volume.  It
+\ reads boot-device and boot-file just like boot does; the retry to devices
+\ outside boot-device and the startup picker are not implemented.
+\
+\ Note this cannot be a bind_func() to the C boot() the way mol, pearpc and
+\ briq do it: on this machine that function is already bound as
+\ platform-boot, so binding it here would skip (find-bootdevice), $load and
+\ go.
+: mac-boot ( "{param-text}<cr>" -- )  boot ;
+
 : parse-1hex 1 parse-nhex ;
 : parse-2hex 2 parse-nhex ;
 : parse-3hex 3 parse-nhex ;
