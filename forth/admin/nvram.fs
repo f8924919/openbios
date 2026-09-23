@@ -102,9 +102,18 @@ constant config-info.size
 
 \ ------------------------------------------------------------
 
+\ Integer configs are stored as bare hex ("4000000"), but Mac OS X
+\ writes them back with a "0x" prefix ("0x3d0900").  parse-hex stops
+\ at the "x" and yields 0, so skip the prefix first.
+: skip-0x ( str len -- str' len' )
+  dup 2 < if exit then
+  over c@ [char] 0 <> if exit then
+  over 1+ c@ upc [char] X <> if exit then
+  2 /string
+;
+
 : exec-int-conf ( str len -- value )
-  \ fixme
-  parse-hex
+  skip-0x parse-hex
 ;
 : check-int-conf ( str len -- str len valid? )
   true
