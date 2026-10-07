@@ -102,9 +102,7 @@ constant config-info.size
 
 \ ------------------------------------------------------------
 
-\ Integer configs are stored as bare hex ("4000000"), but Mac OS X
-\ writes them back with a "0x" prefix ("0x3d0900").  parse-hex stops
-\ at the "x" and yields 0, so skip the prefix first.
+\ parse-hex stops at the "x" of a "0x" prefix and yields 0, so strip it.
 : skip-0x ( str len -- str' len' )
   dup 2 < if exit then
   over c@ [char] 0 <> if exit then
@@ -112,9 +110,21 @@ constant config-info.size
   2 /string
 ;
 
+[IFDEF] CONFIG_PPC
+\ Mac OS X reads integer configs with strtol(s, 0, 0) and writes them
+\ back as "-1", decimal below 1000, else "0x" hex (IONVRAM.cpp).  Read
+\ them the same way, "0x" hex else decimal, so that a value it wrote
+\ back means what it meant to it.  Octal is not used: Mac OS X never
+\ writes a leading zero.
+: exec-int-conf ( str len -- value )
+  dup >r skip-0x dup r> <> if parse-hex exit then
+  base @ >r decimal 1 parse-ints r> base !
+;
+[ELSE]
 : exec-int-conf ( str len -- value )
   skip-0x parse-hex
 ;
+[THEN]
 : check-int-conf ( str len -- str len valid? )
   true
 ;
@@ -342,7 +352,7 @@ s" false"    s" little-endian?"       bool-config
 s" false"    s" real-mode?"           bool-config
 s" -1"       s" real-base"            int-config
 s" -1"       s" real-size"            int-config
-s" 4000000"  s" load-base"          int-config
+s" 0x4000000" s" load-base"          int-config
 s" -1"       s" virt-base"            int-config
 s" -1"       s" virt-size"            int-config
 s" true"     s" vga-ndrv?"            bool-config
