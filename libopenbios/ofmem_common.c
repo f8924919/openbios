@@ -751,16 +751,15 @@ static int unmap_page_range( ucell virt, ucell size )
 	plink = &ofmem->trans;
 
 	while (*plink && (*plink)->virt < virt+size) {
-		translation_t **plinkentry = plink;
 		translation_t *t = *plink;
 
-		/* move ahead */
-		plink = &t->next;
+		if (t->virt < virt || t->virt + t->size > virt+size) {
+			/* move ahead */
+			plink = &t->next;
+		} else {
 
-		if (t->virt >= virt && t->virt + t->size <= virt+size) {
-
-			/* unlink entry */
-			*plinkentry = t->next;
+			/* unlink entry; plink now links the next one */
+			*plink = t->next;
 
 			OFMEM_TRACE("unmap_page_range found "
 					FMT_ucellx " -> " FMT_plx " " FMT_ucellx
