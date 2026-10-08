@@ -246,6 +246,14 @@ static const pci_dev_t vga_devices[] = {
         NULL, NULL,
     },
     {
+        /* R350 (Radeon 9800), from cat7's G5-openbios (8d09eabc79). Its own
+         * FCode names the node; this is what is used if it has none. */
+        PCI_VENDOR_ID_ATI, PCI_DEVICE_ID_ATI_RADEON_NH,
+        NULL, "ATY",      "ATY Radeon", "VGA\0",
+        0, 0, 0,
+        NULL, NULL,
+    },
+    {
         PCI_VENDOR_ID_QEMU, PCI_DEVICE_ID_QEMU_VGA,
         NULL, "QEMU,VGA", "QEMU VGA",    "VGA\0",
         0, 0, 0,

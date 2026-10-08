@@ -146,14 +146,14 @@ defer vbe-iow!
 
 : map-fb ( -- )
   cfg-bar0 pci-bar>pci-addr if   \ ( pci-addr.lo pci-addr.mid pci-addr.hi size )
-    " pci-map-in" $call-parent
+    " map-in" $call-parent
     to fb-addr
   then
 ;
 
 : map-mmio ( -- )
   cfg-bar2 pci-bar>pci-addr if   \ ( pci-addr.lo pci-addr.mid pci-addr.hi size )
-    " pci-map-in" $call-parent
+    " map-in" $call-parent
     to mmio-addr
   then
 ;

@@ -383,6 +383,12 @@ static ucell ob_pci_map(uint32_t ba, ucell size) {
 #if defined(CONFIG_PPC)
 	/* For some reason PPC gets upset when virt != phys for map-in... */
 	virt = ofmem_claim_virt(phys, size, 0);
+	if (virt == (ucell)-1) {
+		/* Already claimed, e.g. a card's FCode mapping the same BAR a
+		   second time: the 1:1 mapping is still the right one (from
+		   cat7's G5-openbios, 8d09eabc79) */
+		virt = phys;
+	}
 #else
 	virt = ofmem_claim_virt(-1, size, size);
 #endif
@@ -403,21 +409,68 @@ static void ob_pci_unmap(ucell virt, ucell size) {
 #endif
 }
 
-/* ( pci-addr.lo pci-addr.mid pci-addr.hi size -- virt ) */
+/* From cat7's G5-openbios (8d09eabc79): the PCI bus binding map-in /
+ * map-out and config-b@ / config-b!, which a card's own FCode calls. */
+/* ( pci-addr.lo pci-addr.mid pci-addr.hi size -- virt )
+ *
+ * IEEE 1275 PCI bus binding map-in. phys.hi is the config-space cell
+ * (npt000ss bbbbbbbb dddddfff rrrrrrrr): the space code lives in ss and
+ * bus/dev/fn/reg identify the device and its base-address register;
+ * phys.lo/phys.mid carry the PCI bus address itself. This used to take
+ * phys.lo and pass it through pci_decode_pci_addr() as though it were a
+ * raw BAR value, dropping phys.hi entirely -- fine for our own vga.fs,
+ * which passes an assigned-addresses entry, but not for a real card's
+ * FCode. The Rage 128 Pro ROM maps its apertures with phys.lo/mid = 0
+ * and the BAR named in phys.hi ("0 0 my-space h# 2000010 + size
+ * map-in"): the address it wants is the BAR's current base, which only
+ * the bus node can know. Resolve that case by reading the BAR from
+ * config space; a non-zero phys.lo/mid is a real PCI address and is
+ * used as given.
+ */
 
 static void
 ob_pci_bus_map_in(int *idx)
 {
-	uint32_t ba;
+	uint32_t hi, mid, lo, ba;
 	ucell size;
 	ucell virt;
+	int space;
 
 	PCI_DPRINTF("ob_pci_bar_map_in idx=%p\n", idx);
 
 	size = POP();
-	POP();
-	POP();
-	ba = POP();
+	hi = POP();
+	mid = POP();
+	lo = POP();
+
+	space = (hi >> 24) & 3;		/* 1 = I/O, 2 = mem32, 3 = mem64 */
+	ba = lo;
+
+	if (lo == 0 && mid == 0 && (hi & 0xff) != 0) {
+		/* relocatable, offset 0: use the BAR's assigned base */
+		pci_addr addr = PCI_ADDR(PCI_BUS(hi), PCI_DEV(hi), PCI_FN(hi));
+		uint32_t bar = pci_config_read32(addr, hi & 0xff);
+
+		if (bar & 1) {
+			ba = bar & ~3u;
+			space = 1;
+		} else {
+			ba = bar & ~0xfu;
+		}
+	}
+
+	/*
+	 * ob_pci_map() decodes the space from the low bits of a BAR-style
+	 * value; hand it one shaped that way.
+	 */
+	if (space == 1) {
+		ba = (ba & ~3u) | 1;
+	} else {
+		ba &= ~0xfu;
+	}
+
+	PCI_DPRINTF("map-in: hi=%x mid=%x lo=%x -> ba=%x size=%lx\n",
+		    hi, mid, lo, ba, (unsigned long)size);
 
 	virt = ob_pci_map(ba, size);
 
@@ -454,12 +507,53 @@ ob_pci_dma_sync(int *idx)
     call_parent_method("dma-sync");
 }
 
+static void
+ob_pci_bus_map_out(int *idx)
+{
+	ucell size = POP();
+	ucell virt = POP();
+
+	PCI_DPRINTF("ob_pci_bus_map_out idx=%p\n", idx);
+
+	ob_pci_unmap(virt, size);
+}
+
+/*
+ * config-b@/config-b! ( config-addr -- byte | byte config-addr -- )
+ * A PCI card's own FCode calls these directly (via $call-parent) to
+ * poke its own config space -- e.g. flipping command-register bits --
+ * without going through a config_cb. config-addr packs bus/dev/fn in
+ * the high bits and the config register offset in the low byte, the
+ * same packed form pci_config_read8/write8 elsewhere in this file
+ * already expect.
+ */
+static void
+ob_pci_config_read8(int *idx)
+{
+	cell hi = POP();
+	pci_addr addr = PCI_ADDR(PCI_BUS(hi), PCI_DEV(hi), PCI_FN(hi));
+	uint8_t val = pci_config_read8(addr, hi & 0xff);
+	PUSH(val);
+}
+
+static void
+ob_pci_config_write8(int *idx)
+{
+	cell hi = POP();
+	pci_addr addr = PCI_ADDR(PCI_BUS(hi), PCI_DEV(hi), PCI_FN(hi));
+	cell val = POP();
+	pci_config_write8(addr, hi & 0xff, val & 0xff);
+}
+
 NODE_METHODS(ob_pci_bus_node) = {
 	{ "open",		ob_pci_open		},
 	{ "close",		ob_pci_close		},
 	{ "decode-unit",	ob_pci_decode_unit	},
 	{ "encode-unit",	ob_pci_encode_unit	},
-	{ "pci-map-in",		ob_pci_bus_map_in	},
+	{ "map-in",		ob_pci_bus_map_in	},
+	{ "map-out",		ob_pci_bus_map_out	},
+	{ "config-b@",		ob_pci_config_read8	},
+	{ "config-b!",		ob_pci_config_write8	},
 	{ "dma-alloc",		ob_pci_dma_alloc	},
 	{ "dma-free",		ob_pci_dma_free		},
 	{ "dma-map-in",		ob_pci_dma_map_in	},
@@ -473,7 +567,14 @@ static void
 ob_pci_bridge_map_in(int *idx)
 {
 	/* As per the IEEE-1275 PCI specification, chain up to the parent */
-	call_parent_method("pci-map-in");
+	call_parent_method("map-in");
+}
+
+static void
+ob_pci_bridge_map_out(int *idx)
+{
+	/* As per the IEEE-1275 PCI specification, chain up to the parent */
+	call_parent_method("map-out");
 }
 
 NODE_METHODS(ob_pci_bridge_node) = {
@@ -481,7 +582,8 @@ NODE_METHODS(ob_pci_bridge_node) = {
 	{ "close",		ob_pci_close		},
 	{ "decode-unit",	ob_pci_decode_unit	},
 	{ "encode-unit",	ob_pci_encode_unit	},
-	{ "pci-map-in",		ob_pci_bridge_map_in	},
+	{ "map-in",		ob_pci_bridge_map_in	},
+	{ "map-out",		ob_pci_bridge_map_out	},
 	{ "dma-alloc",		ob_pci_dma_alloc	},
 	{ "dma-free",		ob_pci_dma_free		},
 	{ "dma-map-in",		ob_pci_dma_map_in	},
@@ -1031,6 +1133,157 @@ int macio_keylargo_config_cb (const pci_config_t *config)
         return 0;
 }
 
+#ifdef CONFIG_PPC
+/*
+ * Run a card's own FCode. From cat7's G5-openbios (8d09eabc79); the
+ * std-vga path below (vga_config_cb) is left exactly as it was.
+ */
+/*
+ * Real PCI expansion ROMs (any code type) start with the standard
+ * PCI Firmware Specification header: signature 0x55 0xAA at offset 0,
+ * then a pointer at offset 0x18 (little-endian) to a "PCIR" PCI Data
+ * Structure. That structure's Code Type byte (offset 0x14 within it)
+ * is 0x01 for an Open Firmware/FCode image, and its own length field
+ * (offset 0x0A) tells us where the FCode program itself begins: right
+ * after the PCI Data Structure.
+ *
+ * A card that genuinely carries its own Open Firmware driver -- as
+ * real hardware (and an emulated card given a real dumped expansion
+ * ROM via romfile=) does -- should have that
+ * driver executed, the same way a real Open Firmware implementation
+ * would, instead of unconditionally substituting the generic
+ * QEMU,VGA.bin driver below.
+ *
+ * Returns a pointer to the start of the FCode program, or NULL if
+ * this ROM doesn't carry one (no ROM, an x86-only VBIOS, EFI, etc).
+ */
+static const unsigned char *find_fcode_rom(unsigned long rom, uint32_t rom_size)
+{
+        const unsigned char *p = (const unsigned char *)rom;
+        uint32_t pcir_off, ds_len;
+
+        if (rom_size < 0x1A || p[0] != 0x55 || p[1] != 0xAA) {
+                return NULL;
+        }
+
+        pcir_off = p[0x18] | (p[0x19] << 8);
+        if (pcir_off + 0x18 > rom_size ||
+            p[pcir_off] != 'P' || p[pcir_off + 1] != 'C' ||
+            p[pcir_off + 2] != 'I' || p[pcir_off + 3] != 'R') {
+                return NULL;
+        }
+
+        if (p[pcir_off + 0x14] != 0x01) {
+                /* Not an Open Firmware image -- x86 VBIOS, EFI, etc. */
+                return NULL;
+        }
+
+        ds_len = p[pcir_off + 0x0A] | (p[pcir_off + 0x0B] << 8);
+        if (pcir_off + ds_len > rom_size) {
+                return NULL;
+        }
+
+        return p + pcir_off + ds_len;
+}
+
+
+/* QEMU's built-in VGA: its ROM carries no FCode, and it keeps the path of
+   vga_config_cb() below untouched (generic vga-driver-fcode). */
+static int vga_is_std_vga(const pci_config_t *config)
+{
+        return pci_config_read16(config->dev, PCI_VENDOR_ID) ==
+                   PCI_VENDOR_ID_QEMU &&
+               pci_config_read16(config->dev, PCI_DEVICE_ID) ==
+                   PCI_DEVICE_ID_QEMU_VGA;
+}
+
+/*
+ * Any other VGA-class card: if its expansion ROM holds an Open Firmware
+ * image, byte-load it right here (see the comment at the byte-load);
+ * without one, fall back to vga-driver-fcode as vga_config_cb() does.
+ */
+static int vga_card_config_cb(const pci_config_t *config)
+{
+        unsigned long rom;
+        uint32_t rom_size, size, bar;
+        phandle_t ph;
+        const unsigned char *fcode_rom = NULL;
+
+        if (config->assigned[0] == 0x00000000) {
+                return 0;
+        }
+
+        setup_video();
+
+        if (config->assigned[6]) {
+                rom = pci_bus_addr_to_host_addr(MEMORY_SPACE_32,
+                                                config->assigned[6] & ~0x0000000F);
+                rom_size = config->sizes[6];
+
+                /* the ROM BAR, with the enable bit (std-vga's path writes
+                   this value to PCI_COMMAND instead) */
+                bar = pci_config_read32(config->dev, PCI_ROM_ADDRESS);
+                bar |= PCI_ROM_ADDRESS_ENABLE;
+                pci_config_write32(config->dev, PCI_ROM_ADDRESS, bar);
+                ph = get_cur_dev();
+
+                if (rom_size >= 8) {
+                        const char *p;
+
+                        p = (const char *)rom;
+                        if (p[0] == 'N' && p[1] == 'D' && p[2] == 'R' && p[3] == 'V') {
+                                size = *(uint32_t*)(p + 4);
+                                set_property(ph, "driver,AAPL,MacOS,PowerPC",
+                                             p + 8, size);
+                        } else if (p[0] == 'J' && p[1] == 'o' &&
+                                   p[2] == 'y' && p[3] == '!') {
+                                set_property(ph, "driver,AAPL,MacOS,PowerPC",
+                                             p, rom_size);
+                        }
+                }
+
+                fcode_rom = find_fcode_rom(rom, rom_size);
+                if (fcode_rom) {
+                        /*
+                         * A card that runs its own FCode needs bus mastering
+                         * (Apple's Open Firmware leaves it on for the display
+                         * card, and Mac OS relies on that). Only such a card
+                         * gets it.
+                         */
+                        ob_pci_enable_bus_master(config);
+
+                        /*
+                         * Run the card's FCode inline, synchronously, during
+                         * PCI probe, while the device node new-device opened
+                         * is still active and its dn.methods wordlist is the
+                         * live compile target. The FCode's own
+                         * ": dimensions ... ;" style method definitions then
+                         * land in this node's method table, where
+                         * $call-method / find-method can find them. Running
+                         * it later from a boot-command (open-dev) happens
+                         * outside that compilation context, and the
+                         * definitions silently miss their node.
+                         */
+                        PUSH(pointer2cell(fcode_rom));
+                        PUSH(1);
+                        fword("byte-load");
+                }
+        }
+
+        if (!fcode_rom) {
+                /* No FCode in the ROM (or no ROM): the generic driver */
+                feval("['] vga-driver-fcode 2 cells + 1 byte-load");
+        }
+
+#ifdef CONFIG_MOL
+        /* Install special words for Mac On Linux */
+        molvideo_init();
+#endif
+
+        return 0;
+}
+#endif
+
 int vga_config_cb (const pci_config_t *config)
 {
 #ifdef CONFIG_PPC
@@ -1038,6 +1291,14 @@ int vga_config_cb (const pci_config_t *config)
         uint32_t rom_size, size, bar;
         phandle_t ph;
 #endif
+
+#ifdef CONFIG_PPC
+        /* Cards other than QEMU's std-vga: look for FCode in the card's ROM */
+        if (!vga_is_std_vga(config)) {
+                return vga_card_config_cb(config);
+        }
+#endif
+
         if (config->assigned[0] != 0x00000000) {
             setup_video();
 
@@ -1420,6 +1681,177 @@ static char pci_xbox_ignore_device (int bus, int devnum, int fn)
 }
 #endif
 
+/*
+ * Place the memory BARs of one bus largest first, so that a big alignment
+ * (a 128 MB frame buffer) does not strand the smaller BARs behind it and
+ * nothing lands beyond the host window.
+ *
+ * Taken from cat7's G5-openbios (8d09eabc79), but used only on a bus that
+ * has an AGP master (a device other than the host bridge with an AGP
+ * capability, cap ID 0x02). Every other bus is laid out in slot order by
+ * ob_pci_configure_bar() exactly as before.
+ */
+#define PCI_STATUS_REG          0x06
+#define PCI_STATUS_CAP_LIST_BIT 0x10
+#define PCI_CAP_ID_AGP          0x02
+
+#define PCI_PREALLOC_MAX 128
+static struct {
+        const pci_arch_t *host;
+        pci_addr addr;
+        int cfg;
+        unsigned long base;
+        uint32_t size;
+} pci_prealloc[PCI_PREALLOC_MAX];
+static int pci_prealloc_n;
+
+static int ob_pci_read_identification(int bus, int devnum, int fn,
+                                      int *vid_ptr, int *did_ptr,
+                                      uint8_t *class_ptr, uint8_t *subclass_ptr);
+
+/* Does this function carry an AGP capability? */
+static int ob_pci_has_agp_cap(pci_addr addr)
+{
+        int ttl = 48;
+        uint8_t pos;
+
+        if (!(pci_config_read16(addr, PCI_STATUS_REG) &
+              PCI_STATUS_CAP_LIST_BIT)) {
+                return 0;
+        }
+        pos = pci_config_read8(addr, PCI_CAPABILITY_LIST) & ~3;
+        while (pos >= 0x40 && ttl--) {
+                if (pci_config_read8(addr, pos) == PCI_CAP_ID_AGP) {
+                        return 1;
+                }
+                pos = pci_config_read8(addr, pos + 1) & ~3;
+        }
+        return 0;
+}
+
+/* Is there an AGP master on this bus? (The host bridge itself, the U3 AGP
+   at slot 11, carries the AGP capability as the target and does not count.) */
+static int ob_pci_bus_has_agp_master(int bus)
+{
+        int devnum, fn, nfn;
+        uint8_t class, subclass;
+        pci_addr addr;
+
+        for (devnum = 0; devnum < 32; devnum++) {
+                nfn = 1;
+                for (fn = 0; fn < nfn; fn++) {
+                        addr = PCI_ADDR(bus, devnum, fn);
+                        if (!ob_pci_read_identification(bus, devnum, fn, 0, 0,
+                                                        &class, &subclass)) {
+                                continue;
+                        }
+                        if (fn == 0 &&
+                            (pci_config_read8(addr, PCI_HEADER_TYPE) & 0x80)) {
+                                nfn = 8;
+                        }
+                        if (class == PCI_BASE_CLASS_BRIDGE &&
+                            subclass == PCI_SUBCLASS_BRIDGE_HOST) {
+                                continue;
+                        }
+                        if (ob_pci_has_agp_cap(addr)) {
+                                return 1;
+                        }
+                }
+        }
+        return 0;
+}
+
+static void ob_pci_prealloc_bus(unsigned long *mem_base, int bus)
+{
+        int devnum, fn, nfn, reg, nregs, rom, i, j, cfg, start;
+        uint32_t orig, smask, align;
+        unsigned long limit = arch->mem_end, base;
+        pci_addr addr;
+        uint8_t ht;
+
+        if (!ob_pci_bus_has_agp_master(bus)) {
+                return;
+        }
+
+        start = pci_prealloc_n;
+        for (devnum = 0; devnum < 32; devnum++) {
+                nfn = 1;
+                for (fn = 0; fn < nfn; fn++) {
+                        addr = PCI_ADDR(bus, devnum, fn);
+                        if (!ob_pci_read_identification(bus, devnum, fn, 0, 0,
+                                                        0, 0)) {
+                                continue;
+                        }
+                        ht = pci_config_read8(addr, PCI_HEADER_TYPE);
+                        if (fn == 0 && (ht & 0x80)) {
+                                nfn = 8;
+                        }
+                        if ((ht & 0x7f) == 0) {
+                                nregs = 6;
+                                rom = PCI_ROM_ADDRESS;
+                        } else if ((ht & 0x7f) == 1) {
+                                nregs = 2;
+                                rom = PCI_ROM_ADDRESS1;
+                        } else {
+                                continue;
+                        }
+                        for (reg = 0; reg <= nregs; reg++) {
+                                cfg = reg == nregs ? rom :
+                                      PCI_BASE_ADDR_0 + reg * 4;
+                                orig = pci_config_read32(addr, cfg);
+                                pci_config_write32(addr, cfg, 0xffffffff);
+                                smask = pci_config_read32(addr, cfg);
+                                pci_config_write32(addr, cfg, orig);
+                                if (smask == 0 || smask == 0xffffffff) {
+                                        continue;
+                                }
+                                if (reg < nregs && (smask & 1)) {
+                                        continue;
+                                }
+                                if (reg < nregs && (smask & 6) == 4) {
+                                        reg++;
+                                }
+                                if (pci_prealloc_n >= PCI_PREALLOC_MAX) {
+                                        continue;
+                                }
+                                pci_prealloc[pci_prealloc_n].host = arch;
+                                pci_prealloc[pci_prealloc_n].addr = addr;
+                                pci_prealloc[pci_prealloc_n].cfg = cfg;
+                                pci_prealloc[pci_prealloc_n].size =
+                                        ~(smask & ~0xfu) + 1;
+                                pci_prealloc[pci_prealloc_n].base = 0;
+                                pci_prealloc_n++;
+                        }
+                }
+        }
+
+        for (i = start + 1; i < pci_prealloc_n; i++) {
+                typeof(pci_prealloc[0]) t = pci_prealloc[i];
+                for (j = i - 1; j >= start && pci_prealloc[j].size < t.size; j--) {
+                        pci_prealloc[j + 1] = pci_prealloc[j];
+                }
+                pci_prealloc[j + 1] = t;
+        }
+
+        for (i = start; i < pci_prealloc_n; i++) {
+                align = pci_prealloc[i].size;
+                if (align < (1 << 16)) {
+                        align = 1 << 16;
+                }
+                base = (*mem_base + align - 1) & ~(unsigned long)(align - 1);
+                if (limit && base + align > limit) {
+                        printk("PCI: no room for %x byte BAR %x of %d:%d.%d\n",
+                               pci_prealloc[i].size, pci_prealloc[i].cfg, bus,
+                               (int)((pci_prealloc[i].addr >> 11) & 0x1f),
+                               (int)((pci_prealloc[i].addr >> 8) & 7));
+                        pci_prealloc[i].size = 0;
+                        continue;
+                }
+                pci_prealloc[i].base = base;
+                *mem_base = base + align;
+        }
+}
+
 static void ob_pci_configure_bar(pci_addr addr, pci_config_t *config,
                                  int reg, int config_addr,
                                  uint32_t *p_omask,
@@ -1468,6 +1900,29 @@ static void ob_pci_configure_bar(pci_addr addr, pci_config_t *config,
         reloc = base;
         if (size < min_align)
                 size = min_align;
+        if (amask == 0x0000000F) {
+                /* Placed beforehand by ob_pci_prealloc_bus() (AGP bus only) */
+                int i;
+
+                for (i = 0; i < pci_prealloc_n; i++) {
+                        if (pci_prealloc[i].host == arch &&
+                            pci_prealloc[i].addr == addr &&
+                            pci_prealloc[i].cfg == config_addr) {
+                                break;
+                        }
+                }
+                if (i < pci_prealloc_n) {
+                        if (!pci_prealloc[i].size) {
+                                config->sizes[reg] = 0;
+                                pci_config_write32(addr, config_addr, 0);
+                                return;
+                        }
+                        reloc = pci_prealloc[i].base;
+                        pci_config_write32(addr, config_addr, reloc | *p_omask);
+                        config->assigned[reg] = reloc | *p_omask;
+                        return;
+                }
+        }
         reloc = (reloc + size -1) & ~(size - 1);
         if (*io_base == base) {
                 PCI_DPRINTF("changing io_base from 0x%lx to 0x%x\n",
@@ -1485,6 +1940,30 @@ static void ob_pci_configure_bar(pci_addr addr, pci_config_t *config,
         config->assigned[reg] = reloc | *p_omask;
 }
 
+/*
+ * The U3 AGP slot, device 0x10, interrupts on MPIC 0x30 (the fifth AGP
+ * interrupt line of QEMU's u3-agp), not on the 0x1b-0x1e the other slots
+ * share. From cat7's G5-openbios (8d09eabc79), but true only on
+ * powermac7_3: the u3-agp of "-M mac99 -cpu 970fx" (MAC99_U3) keeps the
+ * old routing for every slot.
+ */
+#define U3_AGP_SLOT     0x10
+#define U3_AGP_SLOT_IRQ 0x30
+
+static int ob_pci_u3_agp_slot(int dev)
+{
+#ifdef CONFIG_PPC
+        /* arch is the ARCH_POWERMAC7_3 entry of known_arch[] in
+           arch/ppc/qemu/init.c (the HT domain is "POWERMAC7_3_HT") */
+        return is_apple() &&
+               arch->device_id == PCI_DEVICE_ID_APPLE_U3_AGP &&
+               !strcmp(arch->name, "POWERMAC7_3") &&
+               dev == U3_AGP_SLOT;
+#else
+        return 0;
+#endif
+}
+
 static void ob_pci_configure_irq(pci_addr addr, pci_config_t *config)
 {
         uint8_t irq_pin, irq_line;
@@ -1494,6 +1973,9 @@ static void ob_pci_configure_irq(pci_addr addr, pci_config_t *config)
                 config->irq_pin = irq_pin;
                 irq_pin = (((config->dev >> 11) & 0x1F) + irq_pin - 1) & 3;
                 irq_line = arch->irqs[irq_pin];
+                if (ob_pci_u3_agp_slot((config->dev >> 11) & 0x1F)) {
+                        irq_line = U3_AGP_SLOT_IRQ;
+                }
                 pci_config_write8(addr, PCI_INTERRUPT_LINE, irq_line);
                 config->irq_line = irq_line;
         } else
@@ -1550,6 +2032,8 @@ static void ob_scan_pci_bus(int *bus_num, unsigned long *mem_base,
 	int devnum, fn, is_multi;
 
 	PCI_DPRINTF("\nScanning bus %d at %s...\n", bus, path);
+
+	ob_pci_prealloc_bus(mem_base, bus);
 
 	for (devnum = 0; devnum < 32; devnum++) {
 		is_multi = 0;
@@ -2029,6 +2513,8 @@ static void ob_pci_host_bus_interrupt(ucell dnode, u32 *props, int *ncells, u32 
     if (!is_apple() && (PCI_DEV(addr) == 1 && PCI_FN(addr) == 0)) {
         /* On PReP machine the LSI SCSI has fixed routing to IRQ 13 */
         props[(*ncells)++] = 13;
+    } else if (ob_pci_u3_agp_slot(PCI_DEV(addr))) {
+        props[(*ncells)++] = U3_AGP_SLOT_IRQ;
     } else {
         props[(*ncells)++] = arch->irqs[((intno - 1) + (addr >> 11)) & 3];
     }

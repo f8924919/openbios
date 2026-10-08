@@ -60,6 +60,14 @@ defer init-fcode-table
   then
 ;
 
+\ Set by byte-load on every call so a caller (e.g. a deferred
+\ boot-command) can tell whether the fcode actually completed instead
+\ of throwing -- byte-load itself always returns normally per its
+\ standard ( addr xt -- ) signature, catching its own exception, so
+\ this is the only way to observe that without changing that
+\ signature.
+false value byte-load-failed?
+
 : byte-load ( addr xt -- )
   ?fcode-verbose if
     cr ." byte-load: evaluating fcode at 0x" over . cr
@@ -81,8 +89,12 @@ defer init-fcode-table
   \ protect against stack overflow/underflow
   0 0 0 0 0 0 depth >r
   
-  ['] (feval) catch if
-    cr ." byte-load: exception caught!" cr
+  ['] (feval) catch dup if
+    cr ." byte-load: exception caught! code=" . cr
+    true to byte-load-failed?
+  else
+    drop
+    false to byte-load-failed?
   then
 
   s" fcode-debug?" evaluate if

@@ -57,6 +57,38 @@ defer (poke)
 
 \ 5.3.7.2 Device-register access
 
+\ On PowerPC every register a card's FCode touches is memory-mapped PCI
+\ space, and the PCI bus binding defines rw@/rl@/rw!/rl! as little-endian
+\ accesses: the value on the stack is in host order, the device sees PCI
+\ byte order. They take the full (virtual) address that map-in handed out.
+\ (Taken from cat7's G5-openbios, 8d09eabc79. Other architectures keep the
+\ empty words.)
+
+[IFDEF] CONFIG_PPC
+: rb@    ( addr -- byte )
+  c@
+  ;
+
+: rw@    ( waddr -- w )
+  w@ wbflip
+  ;
+
+: rl@    ( qaddr -- quad )
+  l@ lbflip
+  ;
+
+: rb!    ( byte addr -- )
+  c!
+  ;
+
+: rw!    ( w waddr -- )
+  swap wbflip swap w!
+  ;
+
+: rl!    ( quad qaddr -- )
+  swap lbflip swap l!
+  ;
+[ELSE]
 : rb@    ( addr -- byte )
   ;
   
@@ -74,6 +106,7 @@ defer (poke)
   
 : rl!    ( quad qaddr -- )
   ;
+[THEN]
 
 : rx@ ( oaddr - o )
   state @ if

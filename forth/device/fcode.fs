@@ -26,6 +26,18 @@ true value fcode-headers?  \ If true, possibly save names for FCodes.
 variable fcode-end         \ state variable, if true, fcode program terminates.
 defer fcode-c@             \ get byte
 
+\ The w, / l, and branch changes in this file, and byte-load-failed? in
+\ feval.fs, come from cat7's G5-openbios (8d09eabc79).
+\
+\ IEEE 1275 w, and l, ( 7.3.4.3 ) compile without aligning; the OpenBIOS
+\ words of the same name align here first. FCode drivers build packed
+\ tables with them -- ATI's Rage 128 ROM keeps its Apple-monitor-sense
+\ table as 7-byte records ( w, c, l, ) and walks it with i wa+ i ca+ i la+,
+\ so with padding inserted every lookup missed and every monitor came out
+\ as "no monitor" ( display-type NONE ). Bind the FCode tokens to these.
+: fcode-w, ( w -- )  here /w allot unaligned-w! ;
+: fcode-l, ( l -- )  here /l allot unaligned-l! ;
+
 : fcode-push-state ( -- <state information> )
   ?fcode-offset16
   fcode-spread
@@ -448,8 +460,21 @@ defer fcode-c@             \ get byte
 \ bbranch ( -- )
 \   Unconditional branch FCode. Followed by FCode-offset.
   
+\ Outside any definition a forward branch moves the FCode stream itself,
+\ so words the skipped or taken part defines exist before later FCode
+\ refers to them (temporary compilation would compile those references
+\ while the words are still undefined).
+
+: fcode-direct? ( -- flag )
+  state @ 0= tmp-comp-depth @ -1 = and
+  ;
+
 : bbranch
-  fcode-offset 0< if \ if we jump backwards, we can forsee where it goes
+  fcode-stream fcode-offset                 ( addr offset )
+  fcode-direct? over 0> and if
+    fcode-spread * + to fcode-stream exit
+  then
+  nip 0< if \ if we jump backwards, we can forsee where it goes
     ['] dobranch ,
     resolve-dest
     execute-tmp-comp
@@ -466,7 +491,11 @@ defer fcode-c@             \ get byte
 \   Conditional branch FCode. Followed by FCode-offset.
 
 : b?branch
-  fcode-offset 0< if \ if we jump backwards, we can forsee where it goes
+  fcode-stream fcode-offset                 ( addr offset )
+  fcode-direct? over 0> and if
+    rot if 2drop else fcode-spread * + to fcode-stream then exit
+  then
+  nip 0< if \ if we jump backwards, we can forsee where it goes
     ['] do?branch ,
     resolve-dest
     execute-tmp-comp
@@ -491,6 +520,7 @@ defer fcode-c@             \ get byte
 \   Target of forward branches.
 
 : b(>resolve)
+  fcode-direct? if exit then
   resolve-orig
   execute-tmp-comp
   ; immediate

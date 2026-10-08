@@ -222,8 +222,8 @@ create fcode-master-table
   ['], reserved-fcode
   ['], reserved-fcode
   ['], c,
-  ['], w,
-  ['], l,
+  ['], fcode-w,
+  ['], fcode-l,
   ['], ,
   ['], um*
   ['], um/mod
