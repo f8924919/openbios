@@ -788,6 +788,199 @@ ob_macio_heathrow_init(const char *path, phys_addr_t addr)
     set_property(aliases, "mac-io", path, strlen(path) + 1);
 }
 
+/* The K2's I2C bus, with the TAS3004 sound equalizer */
+static void
+k2_i2c_init(phys_addr_t addr, phandle_t mpic)
+{
+        phandle_t dnode;
+        int props[2];
+
+        fword("new-device");
+        push_str("i2c");
+        fword("device-name");
+        dnode = get_cur_dev();
+        set_property(dnode, "device_type", "i2c", 4);
+        set_property(dnode, "compatible", "k2-i2c\0keywest-i2c", 19);
+        set_property(dnode, "built-in", "", 0);
+        props[0] = __cpu_to_be32(0x18000);
+        props[1] = __cpu_to_be32(0x1000);
+        set_property(dnode, "reg", (char *)&props, sizeof(props));
+        props[0] = __cpu_to_be32(0x1a);
+        props[1] = __cpu_to_be32(1);
+        set_property(dnode, "interrupts", (char *)&props, sizeof(props));
+        set_int_property(dnode, "interrupt-parent", mpic);
+        set_int_property(dnode, "AAPL,address", addr + 0x18000);
+        set_int_property(dnode, "AAPL,address-step", 0x10);
+        set_int_property(dnode, "AAPL,i2c-rate", 100);
+        set_property(dnode, "AAPL,driver-name", ".i2c-mac-io", 12);
+        set_int_property(dnode, "#address-cells", 1);
+        set_int_property(dnode, "#size-cells", 0);
+
+        fword("new-device");
+        push_str("deq");
+        fword("device-name");
+        dnode = get_cur_dev();
+        set_property(dnode, "device_type", "deq", 4);
+        set_int_property(dnode, "reg", 0x6a);
+        set_int_property(dnode, "i2c-address", 0x6a);
+        fword("finish-device");
+
+        fword("finish-device");
+}
+
+static void
+set_be32_property(phandle_t ph, const char *name, const uint32_t *v, int n)
+{
+        uint32_t buf[40];
+        int i;
+
+        for (i = 0; i < n; i++) {
+                buf[i] = __cpu_to_be32(v[i]);
+        }
+        set_property(ph, name, (char *)buf, n * sizeof(uint32_t));
+}
+
+/* FCR1 I2S0 functions of the K2, as ON_DEMAND platform-do properties */
+static const struct {
+        const char *name;
+        uint32_t cmd[5];
+        int n;
+} k2_i2s_pfuncs[] = {
+        { "platform-do-enable",           { 0x08000000, 3, 0x3c, 0x2000, 0x2000 }, 5 },
+        { "platform-do-disable",          { 0x08000000, 3, 0x3c, 0, 0x2000 }, 5 },
+        { "platform-do-clock-enable",     { 0x08800000, 3, 0x3c, 0x1000, 0x1000 }, 5 },
+        { "platform-do-clock-disable",    { 0x08800000, 3, 0x3c, 0, 0x1000 }, 5 },
+        { "platform-do-sw-reset",         { 0x08000000, 3, 0x3c, 0x800, 0x800 }, 5 },
+        { "platform-do-clear-sw-reset",   { 0x08000000, 3, 0x3c, 0, 0x800 }, 5 },
+        { "platform-do-cell-enable",      { 0x08000000, 3, 0x3c, 0x400, 0x400 }, 5 },
+        { "platform-do-cell-disable",     { 0x08000000, 3, 0x3c, 0, 0x400 }, 5 },
+};
+
+static const struct {
+        const char *name;
+        uint32_t mask, shift;
+} k2_i2s_getfuncs[] = {
+        { "platform-do-get-enable",       0x2000, 0xd },
+        { "platform-do-get-clock-enable", 0x1000, 0xc },
+        { "platform-do-get-sw-reset",     0x800,  0xb },
+        { "platform-do-get-cell-enable",  0x400,  0xa },
+};
+
+static const char *k2_i2s_fnames[] = {
+        "enable", "disable", "clock-enable", "clock-disable", "sw-reset",
+        "clear-sw-reset", "cell-enable", "cell-disable", "get-enable",
+        "get-clock-enable", "get-sw-reset", "get-cell-enable",
+};
+
+/* The K2's I2S-a sound cell, with a TAS3004 on the K2 I2C bus */
+static void
+k2_i2s_init(phys_addr_t addr, phandle_t mpic)
+{
+        static const uint32_t clock_data[] = {
+                0x02b11000, 0x3c, 0x3400, 0x44, 0x4000, 0x44, 0x400, 0x44,
+                4, 0x69303439, 0x6e756c6c, 0,
+                0x02ee0000, 0x3c, 0x3400, 0x44, 0x4000, 0x44, 0x200, 0x44,
+                2, 0x69303435, 0x6e756c6c, 0,
+                0x01194000, 0x3c, 0x3000, 0x3c, 0x400, 0x44, 0x4000, 0,
+                0, 0x6e756c6c, 0x6e756c6c, 0,
+        };
+        static const uint32_t clock_id[] = {
+                0x69327330, 0x69303435, 0x69303439, 0x69303138,
+        };
+        static const uint32_t prio[] = { 2, 4, 4 };
+        uint32_t props[8];
+        phandle_t macio, i2s_a, dnode;
+        char buf[40];
+        unsigned int i;
+
+        macio = get_cur_dev();
+
+        fword("new-device");
+        push_str("i2s");
+        fword("device-name");
+        dnode = get_cur_dev();
+        set_property(dnode, "device_type", "i2s", 4);
+        set_property(dnode, "built-in", "", 0);
+        props[0] = 0x10000;
+        props[1] = 0x1000;
+        props[2] = 0x8000;
+        props[3] = 0x400;
+        set_be32_property(dnode, "reg", props, 4);
+        set_int_property(dnode, "#address-cells", 1);
+        set_property(dnode, "ranges", "", 0);
+        set_int_property(dnode, "AAPL,address", addr + 0x10000);
+
+        fword("new-device");
+        push_str("i2s-a");
+        fword("device-name");
+        i2s_a = get_cur_dev();
+        set_property(i2s_a, "device_type", "soundbus", 9);
+        set_property(i2s_a, "compatible", "i2sbus", 7);
+        set_property(i2s_a, "built-in", "", 0);
+        props[0] = 0;
+        props[1] = 0x1000;
+        props[2] = 0;
+        props[3] = 0x100;
+        props[4] = 0x100;
+        props[5] = 0x100;
+        set_be32_property(i2s_a, "reg", props, 6);
+        /*
+         * Cell (level), then the TX and RX DMA (edge).  The real K2 uses 1
+         * and 2 for the DMA, but QEMU's powermac7_3 keeps the mac-io IDE,
+         * whose DMA takes 2 and 3, and the ESCC DMA takes 4..7: RX is on 8.
+         * Must match K2_I2S_TX_DMA_IRQ / K2_I2S_RX_DMA_IRQ in QEMU.
+         */
+        props[0] = 0x1e;
+        props[1] = 1;
+        props[2] = 1;
+        props[3] = 0;
+        props[4] = 8;
+        props[5] = 0;
+        set_be32_property(i2s_a, "interrupts", props, 6);
+        set_int_property(i2s_a, "interrupt-parent", mpic);
+        set_be32_property(i2s_a, "AAPL,requested-priorities", prio, 3);
+        set_be32_property(i2s_a, "AAPL,clock-id", clock_id, 4);
+        set_be32_property(i2s_a, "AAPL,clock-data", clock_data,
+                          sizeof(clock_data) / sizeof(clock_data[0]));
+        for (i = 0; i < sizeof(k2_i2s_fnames) / sizeof(k2_i2s_fnames[0]); i++) {
+                snprintf(buf, sizeof(buf), "platform-%s", k2_i2s_fnames[i]);
+                set_int_property(i2s_a, buf, macio);
+        }
+
+        fword("new-device");
+        push_str("sound");
+        fword("device-name");
+        dnode = get_cur_dev();
+        set_property(dnode, "device_type", "soundchip", 10);
+        set_property(dnode, "compatible", "AOAK2", 6);
+        set_property(dnode, "built-in", "", 0);
+        set_int_property(dnode, "layout-id", 36);
+        set_int_property(dnode, "object-model-version", 2);
+        set_int_property(dnode, "vendor-id", 0x106b);
+        fword("finish-device");
+
+        fword("finish-device");
+        fword("finish-device");
+
+        for (i = 0; i < sizeof(k2_i2s_pfuncs) / sizeof(k2_i2s_pfuncs[0]); i++) {
+                props[0] = i2s_a;
+                memcpy(&props[1], k2_i2s_pfuncs[i].cmd,
+                       k2_i2s_pfuncs[i].n * sizeof(uint32_t));
+                set_be32_property(macio, k2_i2s_pfuncs[i].name, props,
+                                  k2_i2s_pfuncs[i].n + 1);
+        }
+        for (i = 0; i < sizeof(k2_i2s_getfuncs) / sizeof(k2_i2s_getfuncs[0]); i++) {
+                props[0] = i2s_a;
+                props[1] = 0x08000000;
+                props[2] = 0x1a;
+                props[3] = 0x3c;
+                props[4] = k2_i2s_getfuncs[i].mask;
+                props[5] = k2_i2s_getfuncs[i].shift;
+                props[6] = 1;
+                set_be32_property(macio, k2_i2s_getfuncs[i].name, props, 7);
+        }
+}
+
 void
 ob_macio_keylargo_init(const char *path, phys_addr_t addr)
 {
@@ -813,6 +1006,20 @@ ob_macio_keylargo_init(const char *path, phys_addr_t addr)
      * along by a mistake in the test.
      */
     openpic_init(path, find_dev("/u3") ? "mpic" : "interrupt-controller");
+    if (find_dev("/u3")) {
+        /*
+         * The K2's sound cell and its i2c.  Both name the mpic as their
+         * interrupt-parent, so this has to come after openpic_init; the
+         * node is found by the PowerMac7,3 name.
+         */
+        char buf[128];
+        phandle_t mpic;
+
+        snprintf(buf, sizeof(buf), "%s/mpic", path);
+        mpic = find_dev(buf);
+        k2_i2s_init(addr, mpic);
+        k2_i2c_init(addr, mpic);
+    }
 
     aliases = find_dev("/aliases");
     set_property(aliases, "mac-io", path, strlen(path) + 1);
