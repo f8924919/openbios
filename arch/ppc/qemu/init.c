@@ -382,13 +382,17 @@ qemu_root_address_cells(void)
     return root_address_cells;
 }
 
-/* -- phys.lo ... phys.hi */
+/*
+ * -- phys.lo ... phys.hi
+ * Takes 64 bits even where phys_addr_t is 32 bits wide: the RAM above
+ * 4 GiB on a PowerMac7,3 has to be described from a 32-bit firmware.
+ */
 static void
-push_physaddr(phys_addr_t value)
+push_physaddr(uint64_t value)
 {
-    PUSH(value);
+    PUSH((ucell)value);
     if (qemu_root_address_cells() == 2) {
-        PUSH((uint64_t)value >> 32);
+        PUSH(value >> 32);
     }
 }
 
@@ -1098,7 +1102,7 @@ arch_of_init(void)
 #ifdef CONFIG_RTAS
     phandle_t ph;
 #endif
-    uint64_t ram_size;
+    uint64_t ram_size, high_ram_size = 0;
     const struct cpudef *cpu;
     char buf[256], qemu_uuid[16];
     const char *stdin_path, *stdout_path, *boot_path;
@@ -1229,8 +1233,17 @@ arch_of_init(void)
     printk("CPUs: %x\n", nb_cpus);
 
     ram_size = ofmem->ramsize;
+    if (machine_id == ARCH_POWERMAC7_3) {
+        /*
+         * QEMU hands the firmware only the RAM below the PCI hole (at most
+         * 2 GiB), so that ofmem, the hash table and the firmware itself
+         * stay where they are with -m 2048.  Whatever is left sits at
+         * 4 GiB and is only described in /memory "reg".
+         */
+        high_ram_size = fw_cfg_read_i64(FW_CFG_PPC_HIGH_RAM_SIZE);
+    }
 
-    printk("Memory: %lldM\n", ram_size / 1024 / 1024);
+    printk("Memory: %lldM\n", (ram_size + high_ram_size) / 1024 / 1024);
 
     fw_cfg_read(FW_CFG_UUID, qemu_uuid, 16);
 
@@ -1371,6 +1384,29 @@ arch_of_init(void)
     PUSH(ram_size & 0xffffffff);
     fword("encode-int");
     fword("encode+");
+    /*
+     * The RAM above the PCI hole, from 4 GiB up, in entries of at most
+     * 2 GiB: #size-cells is 1, so a single entry cannot reach 4 GiB.
+     * "available" is left alone; it is written with one address cell
+     * (see ofmem_arch_get_available_entry_size), which cannot describe
+     * anything above 4 GiB, and the firmware never claims from there.
+     */
+    {
+        uint64_t base = 0x100000000ULL, left = high_ram_size;
+
+        while (left) {
+            uint64_t chunk = left < 0x80000000ULL ? left : 0x80000000ULL;
+
+            push_physaddr(base);
+            fword("encode-phys");
+            fword("encode+");
+            PUSH((ucell)chunk);
+            fword("encode-int");
+            fword("encode+");
+            base += chunk;
+            left -= chunk;
+        }
+    }
     push_str("reg");
     fword("property");
 
