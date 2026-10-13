@@ -444,6 +444,12 @@ static int is_ppc64(void)
 #endif
 }
 
+/* A 64-bit MMU's hash table is at least 256 KiB (SDR1 HTABSIZE 0) */
+static unsigned long get_hash_size(void)
+{
+    return is_ppc64() ? MAX(HASH_SIZE, 1UL << 18) : HASH_SIZE;
+}
+
 /* XXX Remove these ugly constructs when legacy 64-bit support is dropped. */
 static void hash_page(unsigned long ea, phys_addr_t phys, ucell mode)
 {
@@ -529,8 +535,8 @@ setup_mmu(unsigned long ramsize)
 
     /* SDR1: Storage Description Register 1 */
 
-    hash_base = (ramsize - OF_CODE_SIZE - HASH_SIZE) & hash_mask;
-    memset((void *)hash_base, 0, HASH_SIZE);
+    hash_base = (ramsize - OF_CODE_SIZE - get_hash_size()) & hash_mask;
+    memset((void *)hash_base, 0, get_hash_size());
     if (is_ppc64())
         mtsdr1(hash_base | MAX(HASH_BITS - 18, 0));
     else
@@ -582,9 +588,9 @@ ofmem_init(void)
     ofmem_claim_virt(0, 4 * PAGE_SIZE, 0);
 
     /* Map everything at the top of physical RAM 1:1, minus the OpenBIOS ROM in RAM copy */
-    ofmem_claim_phys(get_ram_top(), get_hash_base() + HASH_SIZE - get_ram_top(), 0);
-    ofmem_claim_virt(get_ram_top(), get_hash_base() + HASH_SIZE - get_ram_top(), 0);
-    ofmem_map(get_ram_top(), get_ram_top(), get_hash_base() + HASH_SIZE - get_ram_top(), 0);
+    ofmem_claim_phys(get_ram_top(), get_hash_base() + get_hash_size() - get_ram_top(), 0);
+    ofmem_claim_virt(get_ram_top(), get_hash_base() + get_hash_size() - get_ram_top(), 0);
+    ofmem_map(get_ram_top(), get_ram_top(), get_hash_base() + get_hash_size() - get_ram_top(), 0);
     
     /* Map the OpenBIOS ROM in RAM copy */
     ofmem_claim_phys(ofmem->ramsize - OF_CODE_SIZE, OF_CODE_SIZE, 0);
