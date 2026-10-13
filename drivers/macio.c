@@ -55,6 +55,8 @@
 /* The Keywest i2c sits inside U3, one 4KB page above the U3 registers */
 #define IO_U3_BASE         0xf8000000
 #define IO_U3_I2C_OFFSET   0x00001000
+#define IO_U3_DART_OFFSET  0x00033000
+#define IO_U3_DART_SIZE    0x00007000
 #define IO_U3_I2C_SIZE     0x00001000
 
 /*
@@ -647,6 +649,47 @@ ob_unin_init(void)
         fword("finish-device");
 }
 
+/*
+ * The U3 DART (IOMMU), present only when QEMU has one (FW_CFG_PPC_DART):
+ * that is when the RAM goes above 4 GiB, so that 32-bit DMA engines can
+ * reach it.  Both Linux and Mac OS X use the DART as soon as this node
+ * exists, so it must not appear otherwise.
+ *
+ *  - The name has to be "dart" directly below /u3: xnu and AppleMacRISC4PE
+ *    look up "/u3/dart" by path to decide that a mapper is required, and
+ *    AppleU3ART / AppleDART match on IONameMatch "dart".
+ *  - compatible "u3-dart": Linux looks the DART up by it (with device_type
+ *    "dart"), and Leopard's AppleDART drives the U4 register layout
+ *    without it.
+ *  - reg is u3-relative, like the i2c's: /u3 carries a ranges entry.
+ */
+static void
+u3_dart_init(const char *path)
+{
+        phandle_t dnode;
+        uint32_t props[2];
+        char buf[128];
+
+        if (!fw_cfg_read_i32(FW_CFG_PPC_DART)) {
+                return;
+        }
+
+        fword("new-device");
+        push_str("dart");
+        fword("device-name");
+
+        snprintf(buf, sizeof(buf), "%s/dart", path);
+        dnode = find_dev(buf);
+
+        set_property(dnode, "device_type", "dart", 5);
+        set_property(dnode, "compatible", "u3-dart\0dart", 13);
+        props[0] = __cpu_to_be32(IO_U3_DART_OFFSET);
+        props[1] = __cpu_to_be32(IO_U3_DART_SIZE);
+        set_property(dnode, "reg", (char *)&props, sizeof(props));
+
+        fword("finish-device");
+}
+
 /* U3 (PowerMac7,3): same memory controller, named u3 */
 void
 ob_u3_init(void)
@@ -691,6 +734,7 @@ ob_u3_init(void)
         }
         mpic_mirror_init("/u3");
         u3_i2c_init("/u3");
+        u3_dart_init("/u3");
 
         fword("finish-device");
 }
